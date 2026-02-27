@@ -93,12 +93,12 @@ def analyze_page_image(
 
     prompt = (
         "You are PETER, a QA assistant for decorative architectural coatings. "
-        "Perform a meticulous visual inspection of the provided report page image. "
-        "Do NOT skim. Enumerate every visible coating/substrate defect or risk indicator you can see "
-        "in photos and in any page visuals (e.g., cracking, flaking, blistering, peeling, efflorescence, "
-        "uneven sheen, lap marks, thin coverage, staining, dampness signs, delamination). "
-        "If there are no relevant visual defects, return an empty findings array. "
-        "Return STRICT JSON that conforms to the provided schema."
+        "Perform a meticulous visual inspection of the provided report page image. Do NOT skim. "
+        "Enumerate every visible coating/substrate defect or risk indicator you can see in photos and page visuals. "
+        "For each finding, you MUST assign one or more canonical_defects from the allowed enum. "
+        "Allowed canonical_defects: CRACKING, PEELING_FLAKING, BLISTERING, EFFLORESCENCE, DAMPNESS_MOULD_ALGAE, "
+        "DELAMINATION, RUST_STAINING, POOR_COVERAGE_EXPOSED_SUBSTRATE, UNEVEN_SHEEN, TEXTURE_INCONSISTENCY. "
+        "If none apply, return an empty findings array. Return STRICT JSON matching the schema."
     )
 
     body: dict[str, Any] = {

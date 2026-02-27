@@ -142,15 +142,15 @@ class ReportService:
         api_key = self.settings.OPENAI_API_KEY
         model = os.getenv("PETER_VISION_MODEL", "gpt-4.1")
 
-        # Naive defect extraction from text (v0): keyword presence.
+        # Extract defects mentioned in text (canonical taxonomy)
         extracted_text = ""
         txt_files = list(sandbox.build_path("00_admin").glob(f"{site.site_code}__REPORT__{rc}__{sha[:12]}*.txt"))
         if txt_files:
-            extracted_text = txt_files[0].read_text(encoding="utf-8", errors="replace").lower()
-        reported_defects = set()
-        for k in ["crack", "cracking", "flaking", "peeling", "blister", "efflores", "delamination", "damp", "mould", "mold", "stain"]:
-            if k in extracted_text:
-                reported_defects.add(k)
+            extracted_text = txt_files[0].read_text(encoding="utf-8", errors="replace")
+
+        from peter.analysis.text_defects import extract_text_defects
+
+        reported_defects = extract_text_defects(extracted_text)
 
         vision_results = []
         omissions = []
@@ -169,12 +169,23 @@ class ReportService:
                 }
             )
 
+            from peter.analysis.defect_taxonomy import CanonicalDefect, MUST_NOT_MISS_VISUAL
+
             for f in vr.findings:
-                key = f.defect.lower()
-                # very simple matching in v0
-                if any(k in key for k in ["crack", "flak", "peel", "blister", "efflores", "delamin", "damp", "mould", "stain"]):
-                    # If not mentioned in reported defects at all, treat as omission.
-                    if not any(k in extracted_text for k in ["crack", "flak", "peel", "blister", "efflores", "delamin", "damp", "mould", "stain"]):
+                canonical: set[CanonicalDefect] = set()
+                for c in (f.canonical_defects or []):
+                    try:
+                        canonical.add(CanonicalDefect(c))
+                    except Exception:
+                        continue
+
+                is_must_not_miss = any(c in MUST_NOT_MISS_VISUAL for c in canonical)
+                is_severe = f.severity in ("HIGH", "CRITICAL")
+                high_conf = float(f.confidence) >= 0.80
+
+                # Omission if (must-not-miss OR severe) and not mentioned in text taxonomy
+                if (is_must_not_miss or is_severe) and high_conf:
+                    if not (canonical & reported_defects):
                         omissions.append((idx, f))
 
         # Persist vision artifact
