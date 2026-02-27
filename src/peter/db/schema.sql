@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER NOT NULL,
   applied_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 1);
+INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 2);
 
 CREATE TABLE IF NOT EXISTS sites (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,10 +54,10 @@ CREATE TABLE IF NOT EXISTS reports (
   issued_datetime TEXT,
   received_at TEXT NOT NULL DEFAULT (datetime('now')),
   spec_id_used INTEGER,
-  result TEXT NOT NULL CHECK (result IN ('PASS','WARN','FAIL')),
+  result TEXT CHECK (result IN ('PASS','WARN','FAIL')),
   review_md_path TEXT,
   review_json_path TEXT,
-  UNIQUE(site_id, report_code, sha256),
+  UNIQUE(site_id, sha256),
   CONSTRAINT fk_reports_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE,
   CONSTRAINT fk_reports_spec FOREIGN KEY (spec_id_used) REFERENCES specs(id)
 );

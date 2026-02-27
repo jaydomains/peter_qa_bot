@@ -23,6 +23,8 @@ class Settings:
     GRAPH_TOKEN: str = ""
     POLL_SECONDS: int = 30
 
+    OPENAI_API_KEY: str = ""
+
     # Always CC list (Phase 2). Keep as list of strings; enforce internal-only.
     REVIEW_DLIST: tuple[str, ...] = (
         "james@khuselabc.co.za",
@@ -48,6 +50,7 @@ class Settings:
             BOT_MAILBOX=os.getenv("PETER_BOT_MAILBOX", ""),
             GRAPH_TOKEN=os.getenv("PETER_GRAPH_TOKEN", ""),
             POLL_SECONDS=int(os.getenv("PETER_POLL_SECONDS", "30")),
+            OPENAI_API_KEY=os.getenv("OPENAI_API_KEY", ""),
         )
 
     def ensure_paths_exist(self) -> None:

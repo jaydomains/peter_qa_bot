@@ -82,8 +82,12 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.cmd == "ingest-report":
             path = Path(args.file).expanduser().resolve()
-            review = report_svc.ingest_report(site_code=args.code, report_code=args.report_code, file_path=path)
-            print(f"OK report ingested: site={args.code} report={args.report_code} result={review['overall_result']}")
+            out = report_svc.ingest_report(site_code=args.code, report_code=args.report_code, file_path=path)
+            print(
+                f"OK report ingested: site={args.code} report={args.report_code} status={out['status']} report_id={out['report_id']}"
+            )
+            if out.get("extracted_text_path") is None:
+                print("NOTE: no meaningful text extracted (OCR/Vision path needed later).")
             return 0
 
         if args.cmd == "query":

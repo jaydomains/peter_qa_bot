@@ -5,6 +5,80 @@ from importlib.resources import files
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """Initialize DB schema (idempotent)."""
+    """Initialize DB schema and apply lightweight migrations.
+
+    This project intentionally avoids a heavy migration tool for now; we keep a
+    single schema.sql plus a few in-code migrations.
+    """
+
     sql = (files("peter.db") / "schema.sql").read_text(encoding="utf-8")
     conn.executescript(sql)
+
+    # Apply migrations based on schema_version
+    vrow = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()
+    version = int(vrow["version"]) if vrow else 0
+
+    # If an existing DB has version 1, migrate reports.result to nullable.
+    if version < 2:
+        _migrate_v1_to_v2(conn)
+        conn.execute("UPDATE schema_version SET version = 2, applied_at = datetime('now') WHERE id = 1")
+
+
+def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
+    """Migration: allow reports.result to be NULL (placeholder records before analysis)."""
+
+    # Check current table_info to see if result is NOT NULL
+    cols = conn.execute("PRAGMA table_info(reports)").fetchall()
+    result_col = next((c for c in cols if c["name"] == "result"), None)
+    if not result_col:
+        return
+    notnull = int(result_col["notnull"])  # 1 if NOT NULL
+    if notnull == 0:
+        return
+
+    # Rebuild reports table (SQLite cannot drop NOT NULL directly)
+    conn.executescript(
+        """
+        PRAGMA foreign_keys=OFF;
+
+        ALTER TABLE reports RENAME TO reports_old;
+
+        CREATE TABLE reports (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          site_id INTEGER NOT NULL,
+          report_code TEXT NOT NULL,
+          filename TEXT NOT NULL,
+          sha256 TEXT NOT NULL,
+          stored_path TEXT NOT NULL,
+          inspection_datetime TEXT,
+          issued_datetime TEXT,
+          received_at TEXT NOT NULL DEFAULT (datetime('now')),
+          spec_id_used INTEGER,
+          result TEXT CHECK (result IN ('PASS','WARN','FAIL')),
+          review_md_path TEXT,
+          review_json_path TEXT,
+          UNIQUE(site_id, sha256),
+          CONSTRAINT fk_reports_site FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE,
+          CONSTRAINT fk_reports_spec FOREIGN KEY (spec_id_used) REFERENCES specs(id)
+        );
+
+        INSERT INTO reports (
+          id, site_id, report_code, filename, sha256, stored_path,
+          inspection_datetime, issued_datetime, received_at, spec_id_used,
+          result, review_md_path, review_json_path
+        )
+        SELECT
+          id, site_id, report_code, filename, sha256, stored_path,
+          inspection_datetime, issued_datetime, received_at, spec_id_used,
+          result, review_md_path, review_json_path
+        FROM reports_old;
+
+        DROP TABLE reports_old;
+
+        CREATE INDEX IF NOT EXISTS idx_reports_site_id ON reports(site_id);
+        CREATE INDEX IF NOT EXISTS idx_reports_site_result ON reports(site_id, result);
+        CREATE INDEX IF NOT EXISTS idx_reports_received_at ON reports(received_at);
+
+        PRAGMA foreign_keys=ON;
+        """
+    )
