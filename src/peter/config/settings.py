@@ -20,8 +20,12 @@ class Settings:
 
     INTERNAL_DOMAIN: str = "khuselabc.co.za"  # overridden by env PETER_INTERNAL_DOMAIN
     BOT_MAILBOX: str = ""
-    GRAPH_TOKEN: str = ""
+    GRAPH_TOKEN: str = ""  # legacy/dev
     POLL_SECONDS: int = 30
+
+    GRAPH_TENANT_ID: str = ""
+    GRAPH_CLIENT_ID: str = ""
+    GRAPH_CLIENT_SECRET: str = ""
 
     OPENAI_API_KEY: str = ""
 
@@ -66,6 +70,9 @@ class Settings:
             BOT_MAILBOX=os.getenv("PETER_BOT_MAILBOX", ""),
             GRAPH_TOKEN=os.getenv("PETER_GRAPH_TOKEN", ""),
             POLL_SECONDS=int(os.getenv("PETER_POLL_SECONDS", "30")),
+            GRAPH_TENANT_ID=os.getenv("PETER_GRAPH_TENANT_ID", ""),
+            GRAPH_CLIENT_ID=os.getenv("PETER_GRAPH_CLIENT_ID", ""),
+            GRAPH_CLIENT_SECRET=os.getenv("PETER_GRAPH_CLIENT_SECRET", ""),
             OPENAI_API_KEY=os.getenv("OPENAI_API_KEY", ""),
         )
 

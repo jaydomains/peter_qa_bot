@@ -49,6 +49,8 @@ def build_parser() -> argparse.ArgumentParser:
     ia.add_argument("--code", required=True)
     ia.add_argument("--report-code", required=True)
 
+    ep = sub.add_parser("email-poll", help="Run Microsoft Graph inbox poll loop (Phase 2)")
+
     q = sub.add_parser("query", help="Query site history")
     q.add_argument("--code", required=True)
     q.add_argument("--type", required=True, choices=["SUMMARY", "LATEST", "FAILS", "TOP_ISSUES"])
@@ -118,6 +120,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "image-audit":
             out = report_svc.image_audit(site_code=args.code, report_code=args.report_code)
             print(out)
+            return 0
+
+        if args.cmd == "email-poll":
+            from peter.interfaces.email.watcher import main as email_main
+
+            email_main()
             return 0
 
         if args.cmd == "query":
