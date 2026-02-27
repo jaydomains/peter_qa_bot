@@ -18,6 +18,7 @@ class VisionError(RuntimeError):
 class VisionFinding:
     defect: str
     canonical_defects: list[str]
+    evidence_basis: str  # PHOTO|PAGE_TEXT_OR_TABLE|LABEL_ONLY
     confidence: float  # 0..1
     severity: str  # LOW|MED|HIGH|CRITICAL
     notes: str
@@ -75,12 +76,23 @@ def analyze_page_image(
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["defect", "canonical_defects", "confidence", "severity", "notes"],
+                    "required": [
+                        "defect",
+                        "canonical_defects",
+                        "evidence_basis",
+                        "confidence",
+                        "severity",
+                        "notes",
+                    ],
                     "properties": {
                         "defect": {"type": "string"},
                         "canonical_defects": {
                             "type": "array",
                             "items": {"type": "string", "enum": canonical_enum},
+                        },
+                        "evidence_basis": {
+                            "type": "string",
+                            "enum": ["PHOTO", "PAGE_TEXT_OR_TABLE", "LABEL_ONLY"],
                         },
                         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                         "severity": {"type": "string", "enum": ["LOW", "MED", "HIGH", "CRITICAL"]},
@@ -93,9 +105,13 @@ def analyze_page_image(
 
     prompt = (
         "You are PETER, a QA assistant for decorative architectural coatings. "
-        "Perform a meticulous visual inspection of the provided report page image. Do NOT skim. "
-        "Enumerate every visible coating/substrate defect or risk indicator you can see in photos and page visuals. "
-        "For each finding, you MUST assign one or more canonical_defects from the allowed enum. "
+        "Perform a meticulous inspection of the provided report page image. Do NOT skim. "
+        "Enumerate each defect/risk indicator you can infer from: (a) the PHOTOS themselves, (b) any PAGE TEXT/TABLES, "
+        "or (c) LABELS that indicate a concern. "
+        "For each finding, you MUST: (1) assign one or more canonical_defects from the allowed enum; "
+        "(2) set evidence_basis to exactly one of: PHOTO, PAGE_TEXT_OR_TABLE, LABEL_ONLY. "
+        "Rules: if you rely on a table (e.g., moisture readings) use PAGE_TEXT_OR_TABLE. If you rely only on a label "
+        "that mentions a defect but it is not visibly clear, use LABEL_ONLY. Only use PHOTO when the defect is visually observable. "
         "Allowed canonical_defects: CRACKING, PEELING_FLAKING, BLISTERING, EFFLORESCENCE, DAMPNESS_MOULD_ALGAE, "
         "DELAMINATION, RUST_STAINING, POOR_COVERAGE_EXPOSED_SUBSTRATE, UNEVEN_SHEEN, TEXTURE_INCONSISTENCY. "
         "If none apply, return an empty findings array. Return STRICT JSON matching the schema."

@@ -153,7 +153,8 @@ class ReportService:
         reported_defects = extract_text_defects(extracted_text)
 
         vision_results = []
-        omissions = []
+        omissions = []  # visual omissions only (PHOTO basis)
+        evidence_blockers = []  # non-visual blockers derived from PAGE_TEXT_OR_TABLE
         for idx, img_path in enumerate(rendered.page_paths, start=1):
             try:
                 vr = analyze_page_image(api_key=api_key, model=model, page_number=idx, image_path=img_path)
@@ -183,10 +184,19 @@ class ReportService:
                 is_severe = f.severity in ("HIGH", "CRITICAL")
                 high_conf = float(f.confidence) >= 0.80
 
-                # Omission if (must-not-miss OR severe) and not mentioned in text taxonomy
-                if (is_must_not_miss or is_severe) and high_conf:
-                    if not (canonical & reported_defects):
-                        omissions.append((idx, f))
+                basis = (getattr(f, "evidence_basis", "PHOTO") or "PHOTO").upper()
+
+                # 1) Visual omission: ONLY when PHOTO basis
+                if basis == "PHOTO":
+                    if (is_must_not_miss or is_severe) and high_conf:
+                        if not (canonical & reported_defects):
+                            omissions.append((idx, f))
+
+                # 2) Non-visual blockers: tables/text indicating high-risk (e.g., moisture fails)
+                if basis == "PAGE_TEXT_OR_TABLE":
+                    # If report text/table indicates moisture risk at HIGH/CRITICAL, create a blocking best-practice issue.
+                    if CanonicalDefect.DAMPNESS_MOULD_ALGAE in canonical and f.severity in ("HIGH", "CRITICAL") and high_conf:
+                        evidence_blockers.append((idx, f))
 
         # Persist vision artifact
         vision_name = f"{site.site_code}__{rc}__{sha[:12]}__vision.json"
@@ -194,11 +204,22 @@ class ReportService:
         vision_path.write_text(json.dumps({"report_id": report_id, "pages": vision_results}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
         created_issue_ids: list[int] = []
+
+        def set_warn_if_needed() -> None:
+            # policy: visual/table risks set WARN, never auto-FAIL.
+            self.report_repo.update_result_and_paths(
+                report_id=report_id,
+                result="WARN",
+                review_md_path=None,
+                review_json_path=str(vision_path.relative_to(self.settings.QA_ROOT)),
+            )
+
         if omissions:
             for page_num, finding in omissions:
                 sev = finding.severity
+                canon = ",".join(getattr(finding, "canonical_defects", []) or [])
                 desc = (
-                    f"Visual omission: photo/page evidence suggests '{finding.defect}' (confidence={finding.confidence:.2f}) "
+                    f"Visual omission (PHOTO): canonical=[{canon}] evidence suggests '{finding.defect}' (confidence={finding.confidence:.2f}) "
                     f"but it does not appear to be recorded in the report text. Page {page_num}. Notes: {finding.notes}"
                 )
                 issue_id = self.issue_repo.insert(
@@ -210,14 +231,26 @@ class ReportService:
                     is_blocking=True,
                 )
                 created_issue_ids.append(issue_id)
+            set_warn_if_needed()
 
-            # set overall result to WARN (policy)
-            self.report_repo.update_result_and_paths(
-                report_id=report_id,
-                result="WARN",
-                review_md_path=None,
-                review_json_path=str(vision_path.relative_to(self.settings.QA_ROOT)),
-            )
+        if evidence_blockers:
+            for page_num, finding in evidence_blockers:
+                sev = finding.severity
+                canon = ",".join(getattr(finding, "canonical_defects", []) or [])
+                desc = (
+                    f"Best practice risk (PAGE_TEXT_OR_TABLE): canonical=[{canon}] indicates '{finding.defect}' (confidence={finding.confidence:.2f}). "
+                    f"Page {page_num}. Notes: {finding.notes}"
+                )
+                issue_id = self.issue_repo.insert(
+                    report_id=report_id,
+                    issue_type="BEST_PRACTICE_RISK",
+                    category="Moisture risk (reported)",
+                    description=desc,
+                    severity=sev,
+                    is_blocking=True,
+                )
+                created_issue_ids.append(issue_id)
+            set_warn_if_needed()
 
         return {
             "report_id": report_id,
