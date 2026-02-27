@@ -22,6 +22,33 @@ def init_db(conn: sqlite3.Connection) -> None:
     if version < 2:
         _migrate_v1_to_v2(conn)
         conn.execute("UPDATE schema_version SET version = 2, applied_at = datetime('now') WHERE id = 1")
+        version = 2
+
+    # v3: add email_attachments table
+    if version < 3:
+        _migrate_v2_to_v3(conn)
+        conn.execute("UPDATE schema_version SET version = 3, applied_at = datetime('now') WHERE id = 1")
+
+
+def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
+    """Migration: add email_attachments audit table."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS email_attachments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          email_event_id INTEGER NOT NULL,
+          filename TEXT NOT NULL,
+          content_type TEXT,
+          sha256 TEXT NOT NULL,
+          stored_path TEXT,
+          quarantined INTEGER NOT NULL DEFAULT 0 CHECK (quarantined IN (0,1)),
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          CONSTRAINT fk_email_att_event FOREIGN KEY (email_event_id) REFERENCES email_events(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_email_att_event_id ON email_attachments(email_event_id);
+        CREATE INDEX IF NOT EXISTS idx_email_att_sha ON email_attachments(sha256);
+        """
+    )
 
 
 def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:

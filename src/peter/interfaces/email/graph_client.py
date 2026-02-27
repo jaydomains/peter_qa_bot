@@ -71,3 +71,17 @@ class GraphClient:
 
     def mark_read(self, *, mailbox: str, message_id: str) -> None:
         self.update_message(mailbox=mailbox, message_id=message_id, payload={"isRead": True})
+
+    def get_message_mime(self, *, mailbox: str, message_id: str) -> bytes:
+        """Download raw MIME content for the message.
+
+        GET /users/{id}/messages/{id}/$value
+        """
+        url = f"{self.base_url}/users/{urllib.parse.quote(mailbox)}/messages/{message_id}/$value"
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("Authorization", f"Bearer {self.token}")
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return resp.read()
+        except Exception as e:
+            raise GraphClientError(f"Graph MIME download failed: {e}") from e

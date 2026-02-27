@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER NOT NULL,
   applied_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 2);
+INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 3);
 
 CREATE TABLE IF NOT EXISTS sites (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,6 +110,21 @@ CREATE TABLE IF NOT EXISTS email_events (
 );
 CREATE INDEX IF NOT EXISTS idx_email_received_at ON email_events(received_at);
 CREATE INDEX IF NOT EXISTS idx_email_site_id ON email_events(site_id);
+
+-- Email attachments (audit + idempotency)
+CREATE TABLE IF NOT EXISTS email_attachments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email_event_id INTEGER NOT NULL,
+  filename TEXT NOT NULL,
+  content_type TEXT,
+  sha256 TEXT NOT NULL,
+  stored_path TEXT,
+  quarantined INTEGER NOT NULL DEFAULT 0 CHECK (quarantined IN (0,1)),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  CONSTRAINT fk_email_att_event FOREIGN KEY (email_event_id) REFERENCES email_events(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_email_att_event_id ON email_attachments(email_event_id);
+CREATE INDEX IF NOT EXISTS idx_email_att_sha ON email_attachments(sha256);
 
 CREATE TRIGGER IF NOT EXISTS trg_sites_updated_at
 AFTER UPDATE ON sites

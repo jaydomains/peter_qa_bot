@@ -8,6 +8,14 @@ class EmailEventRepository:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
+    def exists_graph_message_id(self, graph_message_id: str) -> bool:
+        if not graph_message_id:
+            return False
+        r = self.conn.execute(
+            "SELECT 1 FROM email_events WHERE graph_message_id = ? LIMIT 1", (graph_message_id,)
+        ).fetchone()
+        return r is not None
+
     def insert_event(
         self,
         *,

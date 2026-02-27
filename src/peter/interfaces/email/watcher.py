@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from peter.util.hashing import sha256_bytes
+from peter.db.repositories.email_attachment_repo import EmailAttachmentRepository
+
 from peter.config.settings import Settings
 from peter.db.connection import get_connection
 from peter.db.schema import init_db
@@ -62,6 +65,7 @@ class EmailWatcher:
             init_db(conn)
             site_repo = SiteRepository(conn)
             email_repo = EmailEventRepository(conn)
+            email_att_repo = EmailAttachmentRepository(conn)
             site_svc = SiteService(conn, self.settings)
             spec_svc = SpecService(conn, self.settings)
             report_svc = ReportService(conn, self.settings)
@@ -70,6 +74,13 @@ class EmailWatcher:
             msgs = graph.list_unread_messages(mailbox=self.settings.BOT_MAILBOX, top=10)
             for m in msgs:
                 mid = m["id"]
+                # Dedupe: if we've seen this graph_message_id, skip.
+                if email_repo.exists_graph_message_id(mid):
+                    try:
+                        graph.mark_read(mailbox=self.settings.BOT_MAILBOX, message_id=mid)
+                    except Exception:
+                        pass
+                    continue
                 subject = (m.get("subject") or "").strip()
                 cmd = parse_subject(subject)
 
@@ -86,8 +97,28 @@ class EmailWatcher:
                     site = site_repo.get_by_code(cmd.site_code)
                     site_id = site.id if site else None
 
-                # TODO: archive original message as .eml (Graph supports $value or MIME content endpoints)
-                email_repo.insert_event(
+                # Archive original message MIME (best-effort)
+                archived_eml_path = None
+                try:
+                    mime_bytes = graph.get_message_mime(mailbox=self.settings.BOT_MAILBOX, message_id=mid)
+                    # store under site email archive if we can resolve site, else global data dir
+                    if cmd.site_code and site_id:
+                        site = site_repo.get_by_code(cmd.site_code)
+                        sandbox = ensure_site_folders(self.settings, folder_name=site.folder_name)
+                        eml_name = f"{site.site_code}__EMAIL__{cmd.kind}__{mid}.eml"
+                        eml_path = sandbox.build_path("04_email_archive", eml_name)
+                        eml_path.write_bytes(mime_bytes)
+                        archived_eml_path = str(eml_path.relative_to(self.settings.QA_ROOT))
+                    else:
+                        g = Path(self.settings.DATA_DIR) / "email_quarantine"
+                        g.mkdir(parents=True, exist_ok=True)
+                        eml_path = g / f"UNKNOWN__EMAIL__{cmd.kind}__{mid}.eml"
+                        eml_path.write_bytes(mime_bytes)
+                        archived_eml_path = str(eml_path)
+                except Exception:
+                    archived_eml_path = None
+
+                event_id = email_repo.insert_event(
                     site_id=site_id,
                     graph_message_id=mid,
                     internet_message_id=m.get("internetMessageId"),
@@ -98,7 +129,7 @@ class EmailWatcher:
                     cc_addresses=cc_addrs,
                     has_external_recipients=has_ext,
                     command_type=cmd.kind,
-                    archived_eml_path=None,
+                    archived_eml_path=archived_eml_path,
                 )
 
                 # Build internal-only reply content
@@ -117,6 +148,20 @@ class EmailWatcher:
                             reply_text = "No PDF attachment found."
                         else:
                             # take first pdf (tighten later)
+                            # Quarantine extras
+                            for extra in pdfs[1:]:
+                                try:
+                                    email_att_repo.insert(
+                                        email_event_id=event_id,
+                                        filename=str(extra.get("name") or "extra.pdf"),
+                                        content_type=str(extra.get("contentType") or ""),
+                                        sha256="".ljust(64, "0"),
+                                        stored_path=None,
+                                        quarantined=True,
+                                    )
+                                except Exception:
+                                    pass
+
                             att_meta = pdfs[0]
                             att = graph.get_attachment(
                                 mailbox=self.settings.BOT_MAILBOX,
@@ -126,14 +171,31 @@ class EmailWatcher:
                             if att.get("@odata.type", "").endswith("fileAttachment") and att.get("contentBytes"):
                                 data = base64.b64decode(att["contentBytes"])
                                 name = att.get("name") or "attachment.pdf"
-                                # Write to a temp drop folder under data/ for ingestion
+                                sha = sha256_bytes(data)
+
+                                # Write to a temp drop folder under data/ for ingestion (idempotent by sha)
                                 drop = Path(self.settings.DATA_DIR) / "email_drop"
                                 drop.mkdir(parents=True, exist_ok=True)
-                                out_path = drop / f"{cmd.site_code}__{cmd.kind}__{mid}__{name}"
-                                out_path.write_bytes(data)
+                                safe_name = f"{cmd.site_code}__{cmd.kind}__{sha[:12]}__{name}".replace("/", "_")
+                                out_path = drop / safe_name
+                                if not out_path.exists():
+                                    out_path.write_bytes(data)
+
+                                email_att_repo.insert(
+                                    email_event_id=event_id,
+                                    filename=name,
+                                    content_type=str(att.get("contentType") or ""),
+                                    sha256=sha,
+                                    stored_path=str(out_path),
+                                    quarantined=False,
+                                )
 
                                 if cmd.kind == "SPEC_UPDATE":
-                                    spec = spec_svc.ingest_spec(site_code=cmd.site_code, version_label=cmd.arg or "REV01", file_path=out_path)
+                                    spec = spec_svc.ingest_spec(
+                                        site_code=cmd.site_code,
+                                        version_label=cmd.arg or "REV01",
+                                        file_path=out_path,
+                                    )
                                     reply_text = f"OK spec ingested site={cmd.site_code} spec_id={spec.id} version={spec.version_label}"
                                 else:
                                     rc = (cmd.arg or "R01").strip().upper().replace(" ", "")
