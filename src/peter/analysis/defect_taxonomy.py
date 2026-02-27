@@ -18,13 +18,17 @@ class CanonicalDefect(str, Enum):
     TEXTURE_INCONSISTENCY = "TEXTURE_INCONSISTENCY"
 
 
-MUST_NOT_MISS_VISUAL: set[CanonicalDefect] = {
+MUST_NOT_MISS_VISUAL_TIER1: set[CanonicalDefect] = {
     CanonicalDefect.CRACKING,
     CanonicalDefect.PEELING_FLAKING,
     CanonicalDefect.BLISTERING,
     CanonicalDefect.EFFLORESCENCE,
     CanonicalDefect.DAMPNESS_MOULD_ALGAE,
     CanonicalDefect.DELAMINATION,
+}
+
+# More visually ambiguous: require higher confidence or higher severity to block.
+MUST_NOT_MISS_VISUAL_TIER2: set[CanonicalDefect] = {
     CanonicalDefect.RUST_STAINING,
     CanonicalDefect.POOR_COVERAGE_EXPOSED_SUBSTRATE,
 }

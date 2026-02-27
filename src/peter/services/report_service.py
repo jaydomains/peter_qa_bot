@@ -169,7 +169,8 @@ class ReportService:
 
         vision_results = []
         omissions = []  # visual omissions only (PHOTO basis)
-        evidence_blockers = []  # non-visual blockers derived from PAGE_TEXT_OR_TABLE
+        observations = []  # non-blocking photo observations
+        moisture_findings = []  # PAGE_TEXT_OR_TABLE moisture findings to merge
         for idx, img_path in enumerate(rendered.page_paths, start=1):
             try:
                 vr = analyze_page_image(api_key=api_key, model=model, page_number=idx, image_path=img_path)
@@ -185,7 +186,11 @@ class ReportService:
                 }
             )
 
-            from peter.analysis.defect_taxonomy import CanonicalDefect, MUST_NOT_MISS_VISUAL
+            from peter.analysis.defect_taxonomy import (
+                CanonicalDefect,
+                MUST_NOT_MISS_VISUAL_TIER1,
+                MUST_NOT_MISS_VISUAL_TIER2,
+            )
 
             for f in vr.findings:
                 canonical: set[CanonicalDefect] = set()
@@ -195,24 +200,36 @@ class ReportService:
                     except Exception:
                         continue
 
-                is_must_not_miss = any(c in MUST_NOT_MISS_VISUAL for c in canonical)
                 is_severe = f.severity in ("HIGH", "CRITICAL")
-                high_conf = float(f.confidence) >= 0.80
-
+                conf = float(f.confidence)
                 basis = (getattr(f, "evidence_basis", "PHOTO") or "PHOTO").upper()
+
+                # Tiered confidence rules for PHOTO omissions
+                tier1 = any(c in MUST_NOT_MISS_VISUAL_TIER1 for c in canonical)
+                tier2 = any(c in MUST_NOT_MISS_VISUAL_TIER2 for c in canonical)
 
                 # 1) Visual omission: ONLY when PHOTO basis
                 if basis == "PHOTO":
-                    if (is_must_not_miss or is_severe) and high_conf:
+                    block = False
+                    if tier1 and conf >= 0.80:
+                        block = True
+                    if tier2 and (conf >= 0.90 or is_severe):
+                        block = True
+                    if is_severe and conf >= 0.80:
+                        block = True
+
+                    if block:
                         if not (canonical & reported_defects):
                             omissions.append((idx, f))
+                    else:
+                        # Non-blocking photo observations (Bucket A)
+                        if canonical:
+                            observations.append((idx, f))
 
-                # 2) Non-visual blockers: tables/text indicating high-risk (e.g., moisture fails)
+                # 2) Non-visual moisture findings from tables/text: collect then merge into one blocker
                 if basis == "PAGE_TEXT_OR_TABLE":
-                    # If report text/table indicates moisture risk at HIGH/CRITICAL, create a blocking best-practice issue.
-                    # Tighten canonical: treat this category as moisture only; blistering etc are downstream risks.
-                    if CanonicalDefect.DAMPNESS_MOULD_ALGAE in canonical and f.severity in ("HIGH", "CRITICAL") and high_conf:
-                        evidence_blockers.append((idx, f))
+                    if CanonicalDefect.DAMPNESS_MOULD_ALGAE in canonical and conf >= 0.80:
+                        moisture_findings.append((idx, f))
 
         # Persist vision artifact
         vision_name = f"{site.site_code}__{rc}__{sha[:12]}__vision.json"
@@ -249,24 +266,50 @@ class ReportService:
                 created_issue_ids.append(issue_id)
             set_warn_if_needed()
 
-        if evidence_blockers:
-            for page_num, finding in evidence_blockers:
-                sev = finding.severity
-                # tighten canonical to moisture only
-                desc = (
-                    f"Best practice risk (PAGE_TEXT_OR_TABLE): canonical=[DAMPNESS_MOULD_ALGAE] indicates '{finding.defect}' (confidence={finding.confidence:.2f}). "
-                    f"Page {page_num}. Notes: {finding.notes}"
+        # Merge moisture findings into a single blocking issue per report (reduce noise)
+        if moisture_findings:
+            # severity = max severity observed (CRITICAL > HIGH > MED > LOW)
+            sev_rank = {"LOW": 1, "MED": 2, "HIGH": 3, "CRITICAL": 4}
+            sev = max((f.severity for _, f in moisture_findings), key=lambda s: sev_rank.get(s, 0))
+
+            lines = []
+            for page_num, finding in moisture_findings:
+                lines.append(
+                    f"- Page {page_num}: {finding.defect} (severity={finding.severity} confidence={finding.confidence:.2f}) notes={finding.notes}"
                 )
-                issue_id = self.issue_repo.insert(
-                    report_id=report_id,
-                    issue_type="BEST_PRACTICE_RISK",
-                    category="Moisture risk (reported)",
-                    description=desc,
-                    severity=sev,
-                    is_blocking=True,
-                )
-                created_issue_ids.append(issue_id)
+
+            desc = (
+                "Best practice risk (PAGE_TEXT_OR_TABLE): canonical=[DAMPNESS_MOULD_ALGAE]. "
+                "Moisture readings / notes indicate elevated substrate moisture risk:\n" + "\n".join(lines)
+            )
+
+            issue_id = self.issue_repo.insert(
+                report_id=report_id,
+                issue_type="BEST_PRACTICE_RISK",
+                category="Moisture risk (reported)",
+                description=desc,
+                severity=sev,
+                is_blocking=True,
+            )
+            created_issue_ids.append(issue_id)
             set_warn_if_needed()
+
+        # Record non-blocking photo observations (Bucket A)
+        for page_num, finding in observations:
+            sev = finding.severity
+            canon = ",".join(getattr(finding, "canonical_defects", []) or [])
+            desc = (
+                f"Visual observation (PHOTO): canonical=[{canon}] '{finding.defect}' (confidence={finding.confidence:.2f}). "
+                f"Page {page_num}. Notes: {finding.notes}"
+            )
+            self.issue_repo.insert(
+                report_id=report_id,
+                issue_type="INFO",
+                category="Visual observation",
+                description=desc,
+                severity=sev,
+                is_blocking=False,
+            )
 
         return {
             "report_id": report_id,
