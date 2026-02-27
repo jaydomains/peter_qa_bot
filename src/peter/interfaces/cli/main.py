@@ -41,6 +41,10 @@ def build_parser() -> argparse.ArgumentParser:
     ar.add_argument("--report-code", required=True)
     ar.add_argument("--reset", action="store_true", help="Delete existing issues for this report before re-analysis")
 
+    sr = sub.add_parser("summarize-report", help="Summarize a report (text-only) and list deterministic flags")
+    sr.add_argument("--code", required=True)
+    sr.add_argument("--report-code", required=True)
+
     q = sub.add_parser("query", help="Query site history")
     q.add_argument("--code", required=True)
     q.add_argument("--type", required=True, choices=["SUMMARY", "LATEST", "FAILS", "TOP_ISSUES"])
@@ -100,6 +104,11 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"OK visual analysis: report_id={out['report_id']} omissions={len(out['omission_issues_created'])} vision_json={out['vision_json']}"
             )
+            return 0
+
+        if args.cmd == "summarize-report":
+            out = report_svc.summarize_report_text(site_code=args.code, report_code=args.report_code)
+            print(out)
             return 0
 
         if args.cmd == "query":

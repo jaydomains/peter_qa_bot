@@ -114,6 +114,75 @@ class ReportService:
             "extracted_text_path": extracted_rel,
         }
 
+    def summarize_report_text(self, *, site_code: str, report_code: str) -> str:
+        """Text-only baseline summary + deterministic flags.
+
+        This is intentionally conservative (no vision).
+        """
+
+        site_code = (site_code or "").strip().upper()
+        rc = self._validate_report_code(report_code)
+
+        site = self.site_repo.get_by_code(site_code)
+        if not site:
+            raise ValidationError(f"Unknown site_code: {site_code}")
+
+        row = self.conn.execute(
+            """
+            SELECT id, sha256
+            FROM reports
+            WHERE site_id = ? AND report_code = ?
+            ORDER BY received_at DESC
+            LIMIT 1
+            """,
+            (site.id, rc),
+        ).fetchone()
+        if not row:
+            raise ValidationError(f"Report not found for site={site_code} report_code={rc}")
+
+        sha = str(row["sha256"])
+        sandbox = ensure_site_folders(self.settings, folder_name=site.folder_name)
+
+        # Prefer cached extracted text file
+        txt_files = list(sandbox.build_path("00_admin").glob(f"{site.site_code}__REPORT__{rc}__{sha[:12]}*.txt"))
+        raw_text = ""
+        if txt_files:
+            raw_text = txt_files[0].read_text(encoding="utf-8", errors="replace")
+        else:
+            # fall back: extract from stored PDF
+            pdf_files = list(sandbox.build_path("02_reports").glob(f"{site.site_code}__REPORT__{rc}__{sha[:12]}*.pdf"))
+            if not pdf_files:
+                raise ValidationError("Could not locate stored PDF for report")
+            raw_text = extract_pdf_text(pdf_files[0])
+
+        from peter.analysis.text_clean import clean_extracted_text
+        from peter.analysis.summary_flags import build_flags, extract_section_excerpt
+
+        clean = clean_extracted_text(raw_text)
+        flags = build_flags(clean)
+
+        parts: list[str] = []
+        parts.append(f"REPORT SUMMARY (text-only)\nsite={site.site_code} report={rc} sha={sha}")
+
+        ex = extract_section_excerpt(clean, "Executive Summary", window=700)
+        if ex:
+            parts.append("\nEXECUTIVE SUMMARY (excerpt)\n" + ex)
+
+        ex2 = extract_section_excerpt(clean, "Test Summary", window=900)
+        if ex2:
+            parts.append("\nTEST SUMMARY (excerpt)\n" + ex2)
+
+        parts.append("\nFLAGS")
+        if not flags:
+            parts.append("- None")
+        else:
+            for fl in flags:
+                parts.append(f"- {fl.title} [{fl.key}]")
+                for ev in fl.evidence:
+                    parts.append(f"    • {ev}")
+
+        return "\n".join(parts) + "\n"
+
     def analyze_report_visuals(self, *, site_code: str, report_code: str, reset: bool = False) -> dict:
         """Run Vision across all pages and create blocking issues for visual omissions.
 
