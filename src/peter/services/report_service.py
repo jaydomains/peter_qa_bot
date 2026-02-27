@@ -5,21 +5,21 @@ import sqlite3
 from peter.config.settings import Settings
 
 
+import json
+import os
 import re
 import shutil
 from pathlib import Path
 
-from peter.db.repositories.site_repo import SiteRepository
+from peter.db.repositories.issue_repo import IssueRepository
 from peter.db.repositories.report_repo import ReportRepository
+from peter.db.repositories.site_repo import SiteRepository
 from peter.domain.errors import ValidationError
-import json
-
-from peter.parsing.pdf_text import extract_pdf_text, has_meaningful_text
 from peter.parsing.pdf_render import render_pdf_pages
+from peter.parsing.pdf_text import extract_pdf_text, has_meaningful_text
 from peter.storage.filestore import ensure_site_folders
 from peter.util.hashing import sha256_file
-from peter.vision.openai_vision import analyze_page_image, VisionError
-from peter.db.repositories.issue_repo import IssueRepository
+from peter.vision.openai_vision import VisionError, analyze_page_image
 
 
 class ReportService:

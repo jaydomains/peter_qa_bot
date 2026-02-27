@@ -18,7 +18,7 @@ class Settings:
     DB_PATH: Path
     QA_ROOT: Path
 
-    INTERNAL_DOMAIN: str = "khuselabc.co.za"
+    INTERNAL_DOMAIN: str = "khuselabc.co.za"  # overridden by env PETER_INTERNAL_DOMAIN
     BOT_MAILBOX: str = ""
     GRAPH_TOKEN: str = ""
     POLL_SECONDS: int = 30
@@ -31,6 +31,7 @@ class Settings:
         "carel@khuselabc.co.za",
         "nickc@khuselabc.co.za",
         "jarrod@khuselabc.co.za",
+        "qa@khuselabc.co.za",
     )
 
     @staticmethod
@@ -42,11 +43,26 @@ class Settings:
         db_path = Path(os.getenv("PETER_DB_PATH", data_dir / "qa.db")).resolve()
         qa_root = Path(os.getenv("PETER_QA_ROOT", data_dir / "QA_ROOT")).resolve()
 
+        internal_domain = os.getenv("PETER_INTERNAL_DOMAIN", "khuselabc.co.za").strip().lower()
+        always_cc_raw = os.getenv("PETER_ALWAYS_CC", "").strip()
+        if always_cc_raw:
+            always_cc = tuple(a.strip().lower() for a in always_cc_raw.replace(";", ",").split(",") if a.strip())
+        else:
+            always_cc = (
+                "james@khuselabc.co.za",
+                "carel@khuselabc.co.za",
+                "nickc@khuselabc.co.za",
+                "jarrod@khuselabc.co.za",
+                "qa@khuselabc.co.za",
+            )
+
         return Settings(
             PROJECT_ROOT=root,
             DATA_DIR=data_dir,
             DB_PATH=db_path,
             QA_ROOT=qa_root,
+            INTERNAL_DOMAIN=internal_domain,
+            REVIEW_DLIST=always_cc,
             BOT_MAILBOX=os.getenv("PETER_BOT_MAILBOX", ""),
             GRAPH_TOKEN=os.getenv("PETER_GRAPH_TOKEN", ""),
             POLL_SECONDS=int(os.getenv("PETER_POLL_SECONDS", "30")),

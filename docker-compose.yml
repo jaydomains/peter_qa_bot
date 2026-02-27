@@ -1,0 +1,9 @@
+services:
+  peter:
+    build: .
+    image: peter-qa:latest
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
