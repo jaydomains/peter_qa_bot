@@ -80,3 +80,13 @@ class Settings:
         self.DATA_DIR.mkdir(parents=True, exist_ok=True)
         self.QA_ROOT.mkdir(parents=True, exist_ok=True)
         (self.QA_ROOT / "SITES").mkdir(parents=True, exist_ok=True)
+
+        # Local filesystem inbox (Phase 1.5) — used to exercise the service loop
+        # without any external dependencies (email/Graph).
+        inbox = self.DATA_DIR / "INBOX"
+        (inbox / "spec").mkdir(parents=True, exist_ok=True)
+        (inbox / "report").mkdir(parents=True, exist_ok=True)
+        (inbox / "processed" / "spec").mkdir(parents=True, exist_ok=True)
+        (inbox / "processed" / "report").mkdir(parents=True, exist_ok=True)
+        (inbox / "quarantine" / "spec").mkdir(parents=True, exist_ok=True)
+        (inbox / "quarantine" / "report").mkdir(parents=True, exist_ok=True)
