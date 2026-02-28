@@ -389,11 +389,9 @@ class ReportService:
         stored_rel = str(row["stored_path"])
 
         sandbox = ensure_site_folders(self.settings, folder_name=site.folder_name)
-        pdf_path = (
-            sandbox.build_path(stored_rel.split("/", 1)[1])
-            if stored_rel.startswith("SITES/")
-            else (self.settings.QA_ROOT / stored_rel)
-        ).resolve()
+        # stored_rel is persisted relative to QA_ROOT (e.g. "SITES/<site_folder>/02_reports/<file>.pdf").
+        # Always resolve from QA_ROOT to avoid double-joining the site folder.
+        pdf_path = (self.settings.QA_ROOT / stored_rel).resolve()
 
         pages_dir = sandbox.ensure_dir("03_reviews", f"{site.site_code}__{rc}__{sha[:12]}__pages")
         rendered = render_pdf_pages(
@@ -453,8 +451,8 @@ class ReportService:
         stored_rel = str(row["stored_path"])
 
         sandbox = ensure_site_folders(self.settings, folder_name=site.folder_name)
-        pdf_path = sandbox.build_path(stored_rel.split("/", 1)[1]) if stored_rel.startswith("SITES/") else (self.settings.QA_ROOT / stored_rel)
-        pdf_path = pdf_path.resolve()
+        # stored_rel is persisted relative to QA_ROOT.
+        pdf_path = (self.settings.QA_ROOT / stored_rel).resolve()
 
         pages_dir = sandbox.ensure_dir("03_reviews", f"{site.site_code}__{rc}__{sha[:12]}__pages")
         max_pages_raw = os.getenv("PETER_VISION_MAX_PAGES", "").strip().lower()
