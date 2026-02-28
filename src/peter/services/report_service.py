@@ -328,6 +328,45 @@ class ReportService:
 
         flags = build_flags(evidence_text)
 
+        # Spec-vs-report role checks (warranty-critical)
+        try:
+            spec_text = ""
+            spec_row = self.conn.execute(
+                """
+                SELECT sp.extracted_text_path
+                FROM sites s
+                JOIN specs sp ON sp.id = s.active_spec_id
+                WHERE s.id = ?
+                """,
+                (site.id,),
+            ).fetchone()
+            if spec_row and spec_row["extracted_text_path"]:
+                spec_abs = (self.settings.QA_ROOT / str(spec_row["extracted_text_path"])).resolve()
+                if spec_abs.exists():
+                    spec_text = spec_abs.read_text(encoding="utf-8", errors="replace")
+
+            if spec_text:
+                from peter.analysis.spec_role_checks import check_elastoshield_used_as_primer
+
+                mm = check_elastoshield_used_as_primer(spec_text=spec_text, report_text=clean)
+                if mm:
+                    desc = (
+                        f"{mm.title}\n\nSpec evidence:\n"
+                        + "\n".join(f"- {x}" for x in mm.evidence_spec)
+                        + "\n\nReport evidence:\n"
+                        + "\n".join(f"- {x}" for x in mm.evidence_report)
+                    )
+                    self.issue_repo.insert(
+                        report_id=report_id,
+                        issue_type="SPEC_DEVIATION",
+                        category="Coating system role mismatch (primer)",
+                        description=desc,
+                        severity=mm.severity,
+                        is_blocking=True,
+                    )
+        except Exception:
+            pass
+
         # Map deterministic flags to issue severity/blocking.
         # Keep it conservative; tune later.
         sev_map = {
