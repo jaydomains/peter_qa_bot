@@ -7,6 +7,12 @@ class IssueRepository:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
+    def delete_for_report(self, report_id: int) -> None:
+        self.conn.execute(
+            "DELETE FROM issues WHERE report_id = ?",
+            (int(report_id),),
+        )
+
     def insert(
         self,
         *,

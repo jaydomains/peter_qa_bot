@@ -190,6 +190,20 @@ class ReportService:
             "extracted_text_path": extracted_rel,
         }
 
+    def _load_report_text(self, *, site, rc: str, sha: str) -> str:
+        sandbox = ensure_site_folders(self.settings, folder_name=site.folder_name)
+
+        # Prefer cached extracted text file
+        txt_files = list(sandbox.build_path("00_admin").glob(f"{site.site_code}__REPORT__{rc}__{sha[:12]}*.txt"))
+        if txt_files:
+            return txt_files[0].read_text(encoding="utf-8", errors="replace")
+
+        # fall back: extract from stored PDF
+        pdf_files = list(sandbox.build_path("02_reports").glob(f"{site.site_code}__REPORT__{rc}__{sha[:12]}*.pdf"))
+        if not pdf_files:
+            raise ValidationError("Could not locate stored PDF for report")
+        return extract_pdf_text(pdf_files[0])
+
     def summarize_report_text(self, *, site_code: str, report_code: str) -> str:
         """Text-only baseline summary + deterministic flags.
 
@@ -217,19 +231,7 @@ class ReportService:
             raise ValidationError(f"Report not found for site={site_code} report_code={rc}")
 
         sha = str(row["sha256"])
-        sandbox = ensure_site_folders(self.settings, folder_name=site.folder_name)
-
-        # Prefer cached extracted text file
-        txt_files = list(sandbox.build_path("00_admin").glob(f"{site.site_code}__REPORT__{rc}__{sha[:12]}*.txt"))
-        raw_text = ""
-        if txt_files:
-            raw_text = txt_files[0].read_text(encoding="utf-8", errors="replace")
-        else:
-            # fall back: extract from stored PDF
-            pdf_files = list(sandbox.build_path("02_reports").glob(f"{site.site_code}__REPORT__{rc}__{sha[:12]}*.pdf"))
-            if not pdf_files:
-                raise ValidationError("Could not locate stored PDF for report")
-            raw_text = extract_pdf_text(pdf_files[0])
+        raw_text = self._load_report_text(site=site, rc=rc, sha=sha)
 
         from peter.analysis.text_clean import clean_extracted_text
         from peter.analysis.summary_flags import build_flags, extract_section_excerpt
@@ -258,6 +260,81 @@ class ReportService:
                     parts.append(f"    • {ev}")
 
         return "\n".join(parts) + "\n"
+
+    def triage_report_text(self, *, site_code: str, report_code: str, reset: bool = False) -> str:
+        """Persist text-only flags into DB issues and set a report result.
+
+        Policy (initial):
+        - Create BEST_PRACTICE_RISK issues for detected flags.
+        - Set report result to WARN if any issues created; otherwise PASS.
+        - Never auto-FAIL from text-only triage.
+        """
+
+        site_code = (site_code or "").strip().upper()
+        rc = self._validate_report_code(report_code)
+
+        site = self.site_repo.get_by_code(site_code)
+        if not site:
+            raise ValidationError(f"Unknown site_code: {site_code}")
+
+        row = self.conn.execute(
+            """
+            SELECT id, sha256
+            FROM reports
+            WHERE site_id = ? AND report_code = ?
+            ORDER BY received_at DESC
+            LIMIT 1
+            """,
+            (site.id, rc),
+        ).fetchone()
+        if not row:
+            raise ValidationError(f"Report not found for site={site_code} report_code={rc}")
+
+        report_id = int(row["id"])
+        sha = str(row["sha256"])
+
+        if reset:
+            self.issue_repo.delete_for_report(report_id)
+
+        from peter.analysis.text_clean import clean_extracted_text
+        from peter.analysis.summary_flags import build_flags
+
+        raw_text = self._load_report_text(site=site, rc=rc, sha=sha)
+        clean = clean_extracted_text(raw_text)
+        flags = build_flags(clean)
+
+        # Map deterministic flags to issue severity/blocking.
+        # Keep it conservative; tune later.
+        sev_map = {
+            "MOISTURE_FAIL": ("HIGH", True),
+            "MOISTURE_HIGH": ("MED", True),
+            "DELAMINATION": ("HIGH", True),
+            "CRACKING": ("MED", False),
+            "BLISTERING": ("MED", False),
+            "PEELING_FLAKING": ("MED", False),
+        }
+
+        created = 0
+        for fl in flags:
+            severity, blocking = sev_map.get(fl.key, ("LOW", False))
+            desc = fl.title
+            if fl.evidence:
+                desc += "\n\nEvidence:\n" + "\n".join(f"- {e}" for e in fl.evidence[:5])
+            self.issue_repo.insert(
+                report_id=report_id,
+                issue_type="BEST_PRACTICE_RISK",
+                category=fl.title,
+                description=desc,
+                severity=severity,
+                is_blocking=bool(blocking),
+            )
+            created += 1
+
+        # Result policy: WARN if any issues created, else PASS.
+        result = "WARN" if created else "PASS"
+        self.report_repo.update_result_and_paths(report_id=report_id, result=result, review_md_path=None, review_json_path=None)
+
+        return f"OK triage report_id={report_id} site={site.site_code} report={rc} sha={sha} issues_created={created} result={result}"
 
     def image_audit(self, *, site_code: str, report_code: str) -> str:
         """Audit pages for photos/tables/labels. No defect inference."""

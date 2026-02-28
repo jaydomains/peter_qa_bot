@@ -45,6 +45,11 @@ def build_parser() -> argparse.ArgumentParser:
     sr.add_argument("--code", required=True)
     sr.add_argument("--report-code", required=True)
 
+    tr = sub.add_parser("triage-report", help="Create DB issues + set report result from text-only flags")
+    tr.add_argument("--code", required=True)
+    tr.add_argument("--report-code", required=True)
+    tr.add_argument("--reset", action="store_true", help="Delete existing issues for this report before triage")
+
     ia = sub.add_parser("image-audit", help="Audit report pages for photo/table/labels (no defect inference)")
     ia.add_argument("--code", required=True)
     ia.add_argument("--report-code", required=True)
@@ -117,6 +122,11 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.cmd == "summarize-report":
             out = report_svc.summarize_report_text(site_code=args.code, report_code=args.report_code)
+            print(out)
+            return 0
+
+        if args.cmd == "triage-report":
+            out = report_svc.triage_report_text(site_code=args.code, report_code=args.report_code, reset=bool(args.reset))
             print(out)
             return 0
 
