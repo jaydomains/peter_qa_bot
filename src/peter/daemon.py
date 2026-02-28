@@ -183,7 +183,15 @@ def run(*, cfg: DaemonConfig | None = None) -> int:
             email_enabled = os.getenv("PETER_EMAIL_ENABLED", "").strip().lower() in ("1", "true", "yes")
             if email_enabled and EmailWatcher is not None:
                 try:
-                    EmailWatcher(settings).run_once()
+                    stats = EmailWatcher(settings).run_once()
+                    # Emit a lightweight heartbeat so ops can see polling is alive.
+                    if stats is not None:
+                        log.info(
+                            "EMAIL poll ok: unread=%s processed=%s commands=%s",
+                            stats.get("unread"),
+                            stats.get("processed"),
+                            stats.get("commands"),
+                        )
                 except Exception:
                     # Policy: email failures must not stop the daemon.
                     log.exception("EMAIL poll failed (continuing daemon loop)")

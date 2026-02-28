@@ -114,6 +114,16 @@ class SpecService:
             extracted_path.write_text(spec_text, encoding="utf-8")
             extracted_text_rel = str(extracted_path.relative_to(self.settings.QA_ROOT))
 
+            # Ensure a spec_rules.json exists (editable by humans)
+            try:
+                from peter.analysis.spec_rules import write_default
+
+                rules_path = sandbox.build_path("00_admin", f"{site.site_code}__SPEC_RULES__{vlabel}__{sha[:12]}.json")
+                if not rules_path.exists():
+                    write_default(rules_path)
+            except Exception:
+                pass
+
             checklist = build_decorative_checklist(spec_text)
             checklist_name = f"{site.site_code}__CHECKLIST__{vlabel}__{sha[:12]}.json"
             checklist_path = sandbox.build_path("00_admin", checklist_name)

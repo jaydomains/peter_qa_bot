@@ -206,7 +206,7 @@ class EmailWatcher:
             self.run_once()
             time.sleep(self.settings.POLL_SECONDS)
 
-    def run_once(self) -> None:
+    def run_once(self) -> dict[str, Any] | None:
         token = client_credentials_token(
             tenant_id=self.settings.GRAPH_TENANT_ID,
             client_id=self.settings.GRAPH_CLIENT_ID,
@@ -225,6 +225,7 @@ class EmailWatcher:
             query_svc = QueryService(conn, self.settings)
 
             msgs = graph.list_unread_messages(mailbox=self.settings.BOT_MAILBOX, top=10)
+            stats: dict[str, Any] = {"unread": len(msgs), "processed": 0, "commands": {}}
             for m in msgs:
                 mid = m["id"]
                 # Dedupe: if we've seen this graph_message_id, skip.
@@ -235,6 +236,21 @@ class EmailWatcher:
                         pass
                     continue
                 subject = (m.get("subject") or "").strip()
+                stats["processed"] += 1
+
+                # Manual TDS override command (subject-based): TDS | VENDOR | CODE | URL
+                try:
+                    from peter.interfaces.email.tds_cmd import parse_tds_subject
+
+                    vendor, code, url = parse_tds_subject(subject)
+                    if vendor and code and url:
+                        from peter.knowledge.tds_library import fetch_and_store_tds
+
+                        rec = fetch_and_store_tds(qa_root=self.settings.QA_ROOT, vendor=vendor, product_key=code, url=url)
+                        graph.mark_read(mailbox=self.settings.BOT_MAILBOX, message_id=mid)
+                        return {"unread": len(msgs), "processed": stats["processed"], "commands": {"TDS": 1}}
+                except Exception:
+                    pass
 
                 # Handle quarantine confirmation commands first (subject-based)
                 conf = parse_confirm_subject(subject)
@@ -376,6 +392,7 @@ class EmailWatcher:
                         continue
 
                 cmd = parse_subject(subject)
+                stats["commands"][cmd.kind] = int(stats["commands"].get(cmd.kind, 0)) + 1
 
                 # If subject is not recognized, attempt attachment-driven inference
                 # for the common workflow: technicians CC the bot on existing threads.
@@ -925,7 +942,14 @@ class EmailWatcher:
                         should_send = False
                         reply_text = "IGNORED: Unrecognized subject format (no reply sent)."
                 except Exception as e:
-                    reply_text = f"ERROR: {e}"
+                    from peter.interfaces.email.error_format import make_error_id, format_error_email, format_trace_for_logs
+
+                    error_id = make_error_id()
+                    # Log full traceback with an id the user can search.
+                    import logging
+
+                    logging.getLogger("peter.email").error(format_trace_for_logs(error_id=error_id, exc=e))
+                    reply_text = format_error_email(cmd=str(cmd), stage="handler", error_id=error_id, exc=e)
 
                 if not should_send:
                     # Still mark read to avoid loops.
@@ -1003,6 +1027,8 @@ class EmailWatcher:
                 graph.update_message(mailbox=self.settings.BOT_MAILBOX, message_id=draft_id, payload=payload)
                 graph.send_message(mailbox=self.settings.BOT_MAILBOX, message_id=draft_id)
                 graph.mark_read(mailbox=self.settings.BOT_MAILBOX, message_id=mid)
+
+            return stats
 
 
 def main() -> None:
