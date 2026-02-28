@@ -688,21 +688,39 @@ class EmailWatcher:
                                     except Exception as e:
                                         vision_note = f"\n\nVISION CHECK (auto)\n- ERROR: {str(e)[:200]}\n"
 
-                                # Compose an operational reply (grounded + explicit recommendations)
+                                # Compose a human-like operational reply.
+                                # Prefer LLM drafting if enabled; fall back to heuristic ask.
                                 try:
-                                    from peter.interfaces.qa.ask import answer_report_question
+                                    use_llm = os.getenv("PETER_EMAIL_DRAFT_USE_OPENAI", "").strip().lower() in ("1", "true", "yes")
+                                    if use_llm and self.settings.OPENAI_API_KEY:
+                                        from peter.interfaces.email.llm_reply import draft_email_reply_llm
 
-                                    reply_text = answer_report_question(
-                                        conn=conn,
-                                        settings=self.settings,
-                                        site_code=cmd.site_code,
-                                        report_code=rc,
-                                        question=(
-                                            "Summarize the QA status for this report and list required next actions to address blocking issues. "
-                                            "Be concise and use bullets where helpful."
-                                        ),
-                                        mode="recommend",
-                                    ).rstrip() + vision_note + "\n"
+                                        # Provide the vision note as evidence input (includes page refs).
+                                        reply_text = draft_email_reply_llm(
+                                            conn=conn,
+                                            settings=self.settings,
+                                            site_code=cmd.site_code,
+                                            report_code=rc,
+                                            vision_text=vision_note,
+                                        )
+                                    else:
+                                        from peter.interfaces.qa.ask import answer_report_question
+
+                                        reply_text = (
+                                            answer_report_question(
+                                                conn=conn,
+                                                settings=self.settings,
+                                                site_code=cmd.site_code,
+                                                report_code=rc,
+                                                question=(
+                                                    "Summarize the QA status for this report and list required next actions to address blocking issues. "
+                                                    "Be concise and use bullets where helpful."
+                                                ),
+                                                mode="recommend",
+                                            ).rstrip()
+                                            + vision_note
+                                            + "\n"
+                                        )
                                 except Exception:
                                     reply_text = f"OK report ingested site={cmd.site_code} report={rc} status={out['status']} report_id={out['report_id']}" + vision_note
 
