@@ -535,11 +535,31 @@ class EmailWatcher:
                                     try:
                                         out_v = report_svc.analyze_report_visuals(site_code=cmd.site_code, report_code=rc, reset=True)
                                         n = len(out_v.get("omission_issues_created") or [])
+                                        vision_json = out_v.get("vision_json")
                                         vision_note = (
                                             "\n\nVISION CHECK (auto)\n"
                                             f"- visual omissions flagged: {n}\n"
-                                            f"- artifact: {out_v.get('vision_json')}\n"
+                                            f"- artifact: {vision_json}\n"
                                         )
+
+                                        # Add short, human-readable vision findings (blocking + notable)
+                                        try:
+                                            from peter.interfaces.email.vision_summary import summarize_vision_json
+
+                                            max_notable = int(os.getenv("PETER_EMAIL_VISION_MAX_NOTABLE", "5"))
+                                            min_conf = float(os.getenv("PETER_EMAIL_VISION_NOTABLE_MIN_CONF", "0.85"))
+                                            vs = summarize_vision_json(
+                                                vision_json_path=str(vision_json),
+                                                max_notable=max_notable,
+                                                notable_min_conf=min_conf,
+                                            )
+
+                                            if vs.blocking:
+                                                vision_note += "\nVISION — Blocking photo findings\n" + "\n".join(vs.blocking[:10]) + "\n"
+                                            if vs.notable:
+                                                vision_note += "\nVISION — Notable observations (non-blocking)\n" + "\n".join(vs.notable) + "\n"
+                                        except Exception:
+                                            pass
                                     except Exception as e:
                                         vision_note = f"\n\nVISION CHECK (auto)\n- ERROR: {str(e)[:200]}\n"
 
