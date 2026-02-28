@@ -25,6 +25,7 @@ from peter.services.site_service import SiteService
 from peter.services.spec_service import SpecService
 from peter.services.report_service import ReportService
 from peter.services.query_service import QueryService
+from peter.storage.filestore import ensure_site_folders
 
 
 def _infer_site_and_ref_from_pdf_bytes(pdf_bytes: bytes) -> tuple[str | None, str | None]:
