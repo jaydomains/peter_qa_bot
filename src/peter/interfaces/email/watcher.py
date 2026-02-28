@@ -22,6 +22,9 @@ from peter.db.schema import init_db
 from peter.db.repositories.email_repo import EmailEventRepository
 from peter.db.repositories.site_repo import SiteRepository
 from peter.interfaces.email.classifier import parse_subject
+from peter.interfaces.email.confirm_commands import parse_confirm_subject
+from peter.interfaces.email.quarantine_queue import load_quarantine_item, save_quarantine_item, update_status
+from peter.interfaces.email.report_identity import infer_from_pdf_bytes
 from peter.interfaces.email.graph_auth import client_credentials_token
 from peter.interfaces.email.graph_client import GraphClient
 
@@ -232,6 +235,56 @@ class EmailWatcher:
                         pass
                     continue
                 subject = (m.get("subject") or "").strip()
+
+                # Handle quarantine confirmation commands first (subject-based)
+                conf = parse_confirm_subject(subject)
+                if conf.kind in ("CONFIRM", "REJECT") and conf.qid:
+                    from_addr_cmd = ((m.get("from") or {}).get("emailAddress") or {}).get("address", "").lower()
+                    try:
+                        item = load_quarantine_item(data_dir=Path(self.settings.DATA_DIR), qid=conf.qid)
+
+                        # Authorization: internal + original sender or forced-cc member
+                        allowed = False
+                        if from_addr_cmd and from_addr_cmd.endswith("@" + self.settings.INTERNAL_DOMAIN):
+                            orig = str(item.meta.get("original_from") or "").lower()
+                            forced = [a.strip().lower() for a in (self.settings.REVIEW_DLIST or [])]
+                            if from_addr_cmd == orig or from_addr_cmd in forced:
+                                allowed = True
+
+                        if not allowed:
+                            # Mark read, ignore
+                            graph.mark_read(mailbox=self.settings.BOT_MAILBOX, message_id=mid)
+                            continue
+
+                        if conf.kind == "REJECT":
+                            update_status(item=item, status="REJECTED", extra={"rejected_by": from_addr_cmd})
+                            graph.mark_read(mailbox=self.settings.BOT_MAILBOX, message_id=mid)
+                            continue
+
+                        # CONFIRM
+                        site = (conf.site or str(item.meta.get("detected_site") or "")).strip().upper()
+                        rep = (conf.report or str(item.meta.get("detected_report") or "")).strip().upper()
+                        rep = rep.replace("R", "") if rep.startswith("R") and rep[1:].isdigit() else rep
+                        rep = rep.zfill(3) if rep.isdigit() else rep
+
+                        # Ingest as QA_REPORT
+                        out = report_svc.ingest_report(site_code=site, report_code=rep, file_path=item.file_path)
+                        try:
+                            report_svc.triage_report_text(site_code=site, report_code=rep, reset=True)
+                        except Exception:
+                            pass
+                        update_status(item=item, status="CONFIRMED", extra={"confirmed_by": from_addr_cmd, "site": site, "report": rep, "ingest": out})
+
+                        graph.mark_read(mailbox=self.settings.BOT_MAILBOX, message_id=mid)
+                        continue
+                    except Exception:
+                        # If command processing fails, do not loop forever.
+                        try:
+                            graph.mark_read(mailbox=self.settings.BOT_MAILBOX, message_id=mid)
+                        except Exception:
+                            pass
+                        continue
+
                 cmd = parse_subject(subject)
 
                 # If subject is not recognized, attempt attachment-driven inference
@@ -253,11 +306,11 @@ class EmailWatcher:
                                 pdf_candidates.append(base64.b64decode(att["contentBytes"]))
 
                         if len(pdf_candidates) == 1:
-                            site_guess, ref_guess = _infer_site_and_ref_from_pdf_bytes(pdf_candidates[0])
-                            if site_guess and ref_guess:
+                            rid = infer_from_pdf_bytes(pdf_candidates[0])
+                            if rid:
                                 from peter.interfaces.email.classifier import ParsedCommand
 
-                                cmd = ParsedCommand("QA_REPORT", site_guess, ref_guess)
+                                cmd = ParsedCommand("QA_REPORT", rid.site_code, rid.report_no)
                     except Exception:
                         # Keep UNKNOWN if anything fails.
                         pass
@@ -491,16 +544,88 @@ class EmailWatcher:
                             reply_text = f"ERROR: Expected exactly 1 PDF attachment for {cmd.kind}, got {len(pdfs)}. Attachments quarantined."
 
                         else:
-                            # Exactly one PDF -> ingest
+                            # Exactly one PDF -> validate identity to prevent cross-contamination
                             p = pdfs[0]
 
-                            # Write to email_drop for ingestion (idempotent by sha)
-                            drop = Path(self.settings.DATA_DIR) / "email_drop"
-                            drop.mkdir(parents=True, exist_ok=True)
-                            safe_name = f"{cmd.site_code}__{cmd.kind}__{p['sha'][:12]}__{p['name']}".replace("/", "_")
-                            out_path = drop / safe_name
-                            if not out_path.exists():
-                                out_path.write_bytes(p["data"])
+                            detected = None
+                            try:
+                                detected = infer_from_pdf_bytes(p["data"])
+                            except Exception:
+                                detected = None
+
+                            claimed_site = (cmd.site_code or "").strip().upper()
+                            claimed_rep = (cmd.arg or "").strip().upper().replace(" ", "")
+                            # normalize claimed report to 3-digit numeric if possible
+                            if claimed_rep.startswith("R") and claimed_rep[1:].isdigit():
+                                claimed_rep = claimed_rep[1:]
+                            if claimed_rep.isdigit():
+                                claimed_rep = claimed_rep.zfill(3)
+
+                            if detected and claimed_site and claimed_rep and (detected.site_code != claimed_site or detected.report_no != claimed_rep):
+                                # Quarantine and ask for confirmation
+                                item = save_quarantine_item(
+                                    data_dir=Path(self.settings.DATA_DIR),
+                                    filename=p["name"],
+                                    content=p["data"],
+                                    meta={
+                                        "original_from": from_addr,
+                                        "graph_message_id": mid,
+                                        "subject": subject,
+                                        "claimed_site": claimed_site,
+                                        "claimed_report": claimed_rep,
+                                        "detected_site": detected.site_code,
+                                        "detected_report": detected.report_no,
+                                    },
+                                )
+                                reply_text = (
+                                    f"QUARANTINED (needs confirmation)\n"
+                                    f"Quarantine ID: {item.qid}\n\n"
+                                    f"Claimed: site={claimed_site} report={claimed_rep}\n"
+                                    f"Detected from PDF: site={detected.site_code} report={detected.report_no}\n\n"
+                                    f"Reply with one of:\n"
+                                    f"- CONFIRM {item.qid}\n"
+                                    f"- CONFIRM {item.qid} | SITE={detected.site_code} | REPORT={detected.report_no}\n"
+                                    f"- REJECT {item.qid}\n\n"
+                                    f"File saved: {str(item.file_path)}\n"
+                                )
+                            elif detected is None:
+                                # If we cannot confidently detect identity, quarantine and ask for confirmation
+                                item = save_quarantine_item(
+                                    data_dir=Path(self.settings.DATA_DIR),
+                                    filename=p["name"],
+                                    content=p["data"],
+                                    meta={
+                                        "original_from": from_addr,
+                                        "graph_message_id": mid,
+                                        "subject": subject,
+                                        "claimed_site": claimed_site,
+                                        "claimed_report": claimed_rep,
+                                        "detected_site": None,
+                                        "detected_report": None,
+                                    },
+                                )
+                                reply_text = (
+                                    f"QUARANTINED (cannot determine site/report from PDF)\n"
+                                    f"Quarantine ID: {item.qid}\n\n"
+                                    f"Claimed: site={claimed_site} report={claimed_rep}\n\n"
+                                    f"Reply with:\n"
+                                    f"- CONFIRM {item.qid} | SITE=<SITE> | REPORT=<NNN>\n"
+                                    f"- REJECT {item.qid}\n\n"
+                                    f"File saved: {str(item.file_path)}\n"
+                                )
+
+                            # If we set a QUARANTINED reply, skip ingest.
+                            if reply_text.startswith("QUARANTINED"):
+                                # proceed to reply send path
+                                pass
+                            else:
+                                # Write to email_drop for ingestion (idempotent by sha)
+                                drop = Path(self.settings.DATA_DIR) / "email_drop"
+                                drop.mkdir(parents=True, exist_ok=True)
+                                safe_name = f"{cmd.site_code}__{cmd.kind}__{p['sha'][:12]}__{p['name']}".replace("/", "_")
+                                out_path = drop / safe_name
+                                if not out_path.exists():
+                                    out_path.write_bytes(p["data"])
 
                             email_att_repo.insert(
                                 email_event_id=event_id,
