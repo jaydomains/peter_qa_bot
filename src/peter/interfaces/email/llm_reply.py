@@ -30,14 +30,21 @@ def _build_evidence_pack(
     sc = (site_code or "").strip().upper()
     rc_in = (report_code or "").strip().upper().replace(" ", "")
 
-    # Normalize report_code so R001 and 001 refer to the same logical report when applicable.
+    # Normalize report_code so R001 and 001 refer to the same logical report.
+    # DB storage is typically numeric (001) for inspection refs.
     rc = rc_in
-    try:
-        from peter.services.report_service import ReportService
+    if re.fullmatch(r"R\d{2,3}", rc_in):
+        rc = rc_in[1:].zfill(3)
+    elif re.fullmatch(r"\d{1,3}", rc_in):
+        rc = rc_in.zfill(3)
+    else:
+        # fall back to service normalization
+        try:
+            from peter.services.report_service import ReportService
 
-        rc = ReportService(conn, settings)._validate_report_code(rc_in)
-    except Exception:
-        rc = rc_in
+            rc = ReportService(conn, settings)._validate_report_code(rc_in)
+        except Exception:
+            rc = rc_in
 
     # Try exact match first; then fall back between R### and ### forms.
     row = conn.execute(
