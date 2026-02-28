@@ -25,9 +25,20 @@ class VisionFinding:
 
 
 @dataclass(frozen=True)
+class VisionObservedProduct:
+    page_number: int
+    raw_text: str
+    product_code: str | None
+    brand: str | None
+    confidence: float
+    notes: str
+
+
+@dataclass(frozen=True)
 class VisionPageResult:
     page_number: int
     findings: list[VisionFinding]
+    observed_products: list[VisionObservedProduct]
     summary: str
 
 
@@ -67,7 +78,7 @@ def analyze_page_image(
     schema = {
         "type": "object",
         "additionalProperties": False,
-        "required": ["page_number", "summary", "findings"],
+        "required": ["page_number", "summary", "findings", "observed_products"],
         "properties": {
             "page_number": {"type": "integer", "minimum": 1},
             "summary": {"type": "string"},
@@ -100,18 +111,36 @@ def analyze_page_image(
                     },
                 },
             },
+            "observed_products": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["raw_text", "confidence"],
+                    "properties": {
+                        "raw_text": {"type": "string"},
+                        "product_code": {"type": ["string", "null"]},
+                        "brand": {"type": ["string", "null"]},
+                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                        "notes": {"type": "string"},
+                    },
+                },
+            },
         },
     }
 
     prompt = (
         "You are PETER, a QA assistant for decorative architectural coatings. "
         "Perform a meticulous inspection of the provided report page image. Do NOT skim. "
-        "Enumerate each defect/risk indicator you can infer from: (a) the PHOTOS themselves, (b) any PAGE TEXT/TABLES, "
+        "1) DEFECT/RISK FINDINGS: Enumerate each defect/risk indicator you can infer from: (a) the PHOTOS themselves, (b) any PAGE TEXT/TABLES, "
         "or (c) LABELS that indicate a concern. "
         "For each finding, you MUST: (1) assign one or more canonical_defects from the allowed enum; "
         "(2) set evidence_basis to exactly one of: PHOTO, PAGE_TEXT_OR_TABLE, LABEL_ONLY. "
         "Rules: if you rely on a table (e.g., moisture readings) use PAGE_TEXT_OR_TABLE. If you rely only on a label "
         "that mentions a defect but it is not visibly clear, use LABEL_ONLY. Only use PHOTO when the defect is visually observable. "
+        "2) OBSERVED PRODUCTS: If you see paint drums/buckets/containers, read the label text and extract observed_products entries. "
+        "For each observed product provide raw_text, optional product_code if clearly visible (e.g. PP950/PU800), optional brand, confidence and notes. "
+        "Do NOT invent product codes. If no products are visible, return an empty observed_products array. "
         "Allowed canonical_defects: CRACKING, PEELING_FLAKING, BLISTERING, EFFLORESCENCE, DAMPNESS_MOULD_ALGAE, "
         "DELAMINATION, RUST_STAINING, POOR_COVERAGE_EXPOSED_SUBSTRATE, UNEVEN_SHEEN, TEXTURE_INCONSISTENCY. "
         "If none apply, return an empty findings array. Return STRICT JSON matching the schema."
@@ -191,4 +220,22 @@ def analyze_page_image(
         raise VisionError(f"No JSON output found in response. Keys: {list(data.keys())}")
 
     findings = [VisionFinding(**f) for f in (out_json.get("findings") or [])]
-    return VisionPageResult(page_number=int(out_json["page_number"]), findings=findings, summary=str(out_json["summary"]))
+    observed_products = [
+        VisionObservedProduct(
+            page_number=int(out_json["page_number"]),
+            raw_text=str(p.get("raw_text") or "").strip(),
+            product_code=(str(p.get("product_code")).strip().upper() if p.get("product_code") else None),
+            brand=(str(p.get("brand")).strip().upper() if p.get("brand") else None),
+            confidence=float(p.get("confidence") or 0.0),
+            notes=str(p.get("notes") or ""),
+        )
+        for p in (out_json.get("observed_products") or [])
+        if str(p.get("raw_text") or "").strip()
+    ]
+
+    return VisionPageResult(
+        page_number=int(out_json["page_number"]),
+        findings=findings,
+        observed_products=observed_products,
+        summary=str(out_json["summary"]),
+    )

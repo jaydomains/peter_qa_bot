@@ -558,6 +558,61 @@ class ReportService:
         vision_path = sandbox.build_path("03_reviews", vision_name)
         vision_path.write_text(json.dumps({"report_id": report_id, "pages": vision_results}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
+        # Spec compliance: compare observed paint products (label text) against active spec allowlist.
+        try:
+            from peter.knowledge.product_allowlist import load_allowlist, match_observed
+
+            # Resolve products allowlist for active spec
+            spec_row = self.conn.execute(
+                """
+                SELECT sp.version_label, sp.sha256
+                FROM sites s
+                JOIN specs sp ON sp.id = s.active_spec_id
+                WHERE s.id = ?
+                """,
+                (site.id,),
+            ).fetchone()
+
+            if spec_row and spec_row["sha256"]:
+                vlabel = str(spec_row["version_label"])
+                ssha = str(spec_row["sha256"])
+                products_name = f"{site.site_code}__PRODUCTS__{vlabel}__{ssha[:12]}.json"
+                products_path = sandbox.build_path("00_admin", products_name)
+                if products_path.exists():
+                    allow = load_allowlist(products_path)
+
+                    # Collect observed products from vision results
+                    observed = []
+                    for pr in vision_results:
+                        for op in pr.get("observed_products") or []:
+                            observed.append((int(pr.get("page") or pr.get("page_number") or 0), op))
+
+                    for page_num, op in observed:
+                        raw = str(op.get("raw_text") or "")
+                        code = op.get("product_code")
+                        if match_observed(allow=allow, raw_text=raw, code=code):
+                            continue
+
+                        conf = float(op.get("confidence") or 0.0)
+                        brand = str(op.get("brand") or "")
+                        desc = (
+                            f"Spec deviation (LABEL_ONLY): observed paint product not found in active spec allowlist. "
+                            f"Observed='{raw}' code='{code or ''}' brand='{brand}'. Page {page_num}. "
+                            f"Spec={vlabel}. Confidence={conf:.2f}."
+                        )
+                        self.issue_repo.insert(
+                            report_id=report_id,
+                            issue_type="SPEC_DEVIATION",
+                            category="Observed product not in spec",
+                            description=desc,
+                            severity="HIGH",
+                            is_blocking=True,
+                        )
+                        set_warn_if_needed()
+        except Exception:
+            # Spec compliance is best-effort; never break vision run.
+            pass
+
         created_issue_ids: list[int] = []
 
         def set_warn_if_needed() -> None:
