@@ -64,21 +64,95 @@ def extract_allowed_products(
 ) -> list[AllowedProduct]:
     """Extract paint product allowlist from spec.
 
-    If use_openai is True and OPENAI_API_KEY present, uses an LLM to normalize
-    and classify products (paint only) based strictly on provided text.
+    Strategy:
+    1) Deterministic parse of common spec product lines (recommended, stable).
+    2) Optional OpenAI normalization (off by default in production unless you
+       trust prompts/cost).
 
-    Output is conservative: prefer fewer, higher-confidence entries.
+    Strict policy: paint products only (exclude fillers, sealants, thinners, etc.).
     """
 
     mentions = extract_candidate_mentions(spec_text)
 
+    # Deterministic extraction first
+    exclude_terms = {
+        "POLYFILLA",
+        "SIKA",
+        "SEALANT",
+        "COMPOUND",
+        "FILL",
+        "FILLER",
+        "KNOT SEAL",
+        "THINNER",
+        "CLEANER",
+        "WATERPROOF",
+        "WATERPROOFING",
+        "MENDALL",
+        # Non-product noise
+        "CONSULTANT",
+        "COLOUR REFERENCE",
+        "COLOUR SYSTEM",
+        "COATING APPLICATION",
+        "COATING SYSTEM",
+        "PROJECTS DEPARTMENT",
+        "GUARANTEE",
+        "FAX NO",
+        "LTD",
+        "(PTY)",
+    }
+
+    out_det: list[AllowedProduct] = []
+    for m in mentions:
+        u = m.upper()
+        if any(t in u for t in exclude_terms):
+            continue
+
+        # Look for explicit product code in parentheses e.g. (PP950) or (PU800)
+        m_code = re.search(r"\(([A-Z]{1,6}\s*\d{0,6}[A-Z0-9/-]{0,10})\)", u)
+        code = _normalize_spaces(m_code.group(1)).upper() if m_code else ""
+
+        # Try to extract after "PLASCON" token
+        prod = u
+        if "PLASCON" in u:
+            prod = u.split("PLASCON", 1)[1].strip(" -")
+        prod = re.sub(r"\(.*?\)", "", prod).strip(" -")
+        prod = _normalize_spaces(prod)
+
+        # Keep only plausible paint product phrases
+        if len(prod) < 4:
+            continue
+        if "APPLY" in prod[:8]:
+            prod = prod.replace("APPLY", "").strip(" -")
+
+        # Require this to look like an instruction line (reduces noise)
+        if "APPLY" not in u and not code:
+            continue
+
+        # Heuristic: paint products often include these words
+        paint_hint = any(x in u for x in ["TOPCOAT", "UNDERCOAT", "PRIMER", "SHEEN", "PAINT", "VELVAGLO", "LOW SHEEN"]) or bool(code)
+        if not paint_hint:
+            continue
+
+        # Brand: Kansai Plascon / Plascon
+        brand = "KANSAI PLASCON" if "KANSAI" in u else "PLASCON"
+        product = f"{prod} ({code})".strip() if code else prod
+
+        out_det.append(AllowedProduct(raw_mention=u, brand=brand, product=product, kind="PAINT", aliases=[]))
+
+    # Deduplicate deterministic list
+    seen2: set[tuple[str | None, str]] = set()
+    uniq_det: list[AllowedProduct] = []
+    for p in out_det:
+        k = (p.brand, p.product)
+        if k in seen2:
+            continue
+        seen2.add(k)
+        uniq_det.append(p)
+
+    # Optional OpenAI refinement (can be enabled; deterministic list is always included)
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not (use_openai and api_key and spec_text.strip()):
-        # Fallback: return raw mentions as UNKNOWN products
-        out: list[AllowedProduct] = []
-        for m in mentions:
-            out.append(AllowedProduct(raw_mention=m, brand=None, product=m, kind="UNKNOWN", aliases=[]))
-        return out
+        return uniq_det
 
     schema: dict[str, Any] = {
         "type": "object",
@@ -144,14 +218,14 @@ def extract_allowed_products(
         ]
         out2.append(AllowedProduct(raw_mention=rm, brand=brand_s, product=prod, kind="PAINT", aliases=aliases))
 
-    # Deduplicate by (brand, product)
-    seen: set[tuple[str | None, str]] = set()
-    uniq: list[AllowedProduct] = []
+    # Merge deterministic + openai outputs (openai may normalize names)
+    merged = uniq_det[:]
+    seen = {(p.brand, p.product) for p in merged}
     for p in out2:
         k = (p.brand, p.product)
         if k in seen:
             continue
         seen.add(k)
-        uniq.append(p)
+        merged.append(p)
 
-    return uniq
+    return merged
