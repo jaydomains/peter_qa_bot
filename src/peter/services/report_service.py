@@ -149,8 +149,17 @@ class ReportService:
             }
 
         safe_filename = f"{site.site_code}__REPORT__{rc}__{sha[:12]}.pdf"
-        stored_pdf = sandbox.build_path("02_reports", safe_filename)
-        shutil.copy2(path, stored_pdf)
+
+        # Storage layout: legacy flat 02_reports, or Option B per-report folder.
+        from peter.storage.layout import use_report_folders
+
+        if use_report_folders() and re.fullmatch(r"\d{3}", rc):
+            report_dir = sandbox.ensure_dir("REPORTS", rc)
+            stored_pdf = Path(report_dir) / "report.pdf"
+            shutil.copy2(path, stored_pdf)
+        else:
+            stored_pdf = sandbox.build_path("02_reports", safe_filename)
+            shutil.copy2(path, stored_pdf)
 
         # Extract text for later analysis (M4)
         text = extract_pdf_text(stored_pdf)
@@ -532,6 +541,9 @@ class ReportService:
         omissions = []  # visual omissions only (PHOTO basis)
         observations = []  # non-blocking photo observations
         moisture_findings = []  # PAGE_TEXT_OR_TABLE moisture findings to merge
+        # Optional: label-focused extraction pass on pages with labels.
+        labels_enabled = os.getenv("PETER_LABELS_FOCUSED_ENABLED", "1").strip().lower() in ("1", "true", "yes")
+
         for idx, img_path in enumerate(rendered.page_paths, start=1):
             try:
                 vr = analyze_page_image(api_key=api_key, model=model, page_number=idx, image_path=img_path)
@@ -539,11 +551,26 @@ class ReportService:
                 vision_results.append({"page": idx, "error": str(e)[:2000]})
                 continue
 
+            observed_products = [op.__dict__ for op in getattr(vr, "observed_products", [])]
+
+            # If the primary pass didn't capture products, and labels are present, run a focused pass.
+            if labels_enabled:
+                try:
+                    audit = audit_page_image(api_key=api_key, model=model, page_number=idx, image_path=img_path)
+                    if audit.has_labels_or_callouts and not observed_products:
+                        from peter.vision.openai_labels import extract_label_products
+
+                        lp = extract_label_products(api_key=api_key, model=model, page_number=idx, image_path=img_path)
+                        observed_products = [p.__dict__ for p in lp]
+                except Exception:
+                    pass
+
             vision_results.append(
                 {
                     "page": idx,
                     "summary": vr.summary,
                     "findings": [f.__dict__ for f in vr.findings],
+                    "observed_products": observed_products,
                 }
             )
 

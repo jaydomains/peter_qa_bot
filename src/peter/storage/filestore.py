@@ -15,6 +15,9 @@ SITE_SUBDIRS = (
     "04_email_archive",
     "05_feedback",
     "99_quarantine",
+    # Option B layout dirs (feature-flagged usage; created upfront)
+    "REPORTS",
+    "SPECS",
 )
 
 

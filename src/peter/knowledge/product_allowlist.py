@@ -39,8 +39,8 @@ def load_allowlist(products_json_path: Path) -> ProductAllowlist:
 
 def match_observed(*, allow: ProductAllowlist, raw_text: str, code: str | None) -> bool:
     if code:
-        c = _norm(code)
-        if c in allow.codes:
+        c = _norm(code).replace(" ", "")
+        if c in {x.replace(" ", "") for x in allow.codes}:
             return True
 
     t = _norm(raw_text)
