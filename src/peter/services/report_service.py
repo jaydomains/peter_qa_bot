@@ -305,7 +305,7 @@ class ReportService:
             self.issue_repo.delete_for_report(report_id)
 
         from peter.analysis.text_clean import clean_extracted_text
-        from peter.analysis.summary_flags import build_flags
+        from peter.analysis.summary_flags import build_flags, extract_section_excerpt
 
         raw_text = self._load_report_text(site=site, rc=rc, sha=sha)
         clean = clean_extracted_text(raw_text)
