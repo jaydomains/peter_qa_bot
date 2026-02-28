@@ -844,6 +844,60 @@ class EmailWatcher:
                             reply_text = query_svc.top_issues(cmd.site_code, days=days)
                         else:
                             reply_text = "Unsupported QUERY. Use SUMMARY, LATEST, FAILS <NDAYS>, TOP ISSUES <NDAYS>"
+
+                    elif cmd.kind == "REPLY":
+                        if not cmd.site_code or not cmd.arg:
+                            raise RuntimeError("REPLY missing site or report ref")
+                        # Draft a fresh internal QA reply for an already-ingested report.
+                        rc = cmd.arg.strip().upper().replace(" ", "")
+                        try:
+                            report_svc.triage_report_text(site_code=cmd.site_code, report_code=rc, reset=True)
+                        except Exception:
+                            pass
+
+                        vision_note = ""
+                        if os.getenv("PETER_VISION_ENABLED", "").strip().lower() in ("1", "true", "yes"):
+                            try:
+                                out_v = report_svc.analyze_report_visuals(site_code=cmd.site_code, report_code=rc, reset=True)
+                                n = len(out_v.get("omission_issues_created") or [])
+                                vision_json = out_v.get("vision_json")
+                                vision_note = (
+                                    "\n\nVISION CHECK (auto)\n"
+                                    f"- visual omissions flagged: {n}\n"
+                                    f"- artifact: {vision_json}\n"
+                                )
+                            except Exception as e:
+                                vision_note = f"\n\nVISION CHECK (auto)\n- ERROR: {str(e)[:200]}\n"
+
+                        # Compose reply
+                        use_llm = os.getenv("PETER_EMAIL_DRAFT_USE_OPENAI", "").strip().lower() in ("1", "true", "yes")
+                        if use_llm and self.settings.OPENAI_API_KEY:
+                            from peter.interfaces.email.llm_reply import draft_email_reply_llm
+
+                            reply_text = draft_email_reply_llm(
+                                conn=conn,
+                                settings=self.settings,
+                                site_code=cmd.site_code,
+                                report_code=rc,
+                                vision_text=vision_note,
+                            )
+                        else:
+                            from peter.interfaces.qa.ask import answer_report_question
+
+                            reply_text = (
+                                answer_report_question(
+                                    conn=conn,
+                                    settings=self.settings,
+                                    site_code=cmd.site_code,
+                                    report_code=rc,
+                                    question=(
+                                        "Draft the internal QA reply email for this report, including key issues and required next actions."
+                                    ),
+                                    mode="recommend",
+                                ).rstrip()
+                                + vision_note
+                                + "\n"
+                            )
                     else:
                         # If subject is not recognized, do NOT send any email.
                         # We will attempt attachment-driven inference for a single PDF.
