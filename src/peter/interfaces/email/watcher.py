@@ -528,6 +528,21 @@ class EmailWatcher:
                                 except Exception:
                                     pass
 
+                                # Always run Vision (if enabled + API key present)
+                                vision_note = ""
+                                vision_enabled = os.getenv("PETER_VISION_ENABLED", "").strip().lower() in ("1", "true", "yes")
+                                if vision_enabled:
+                                    try:
+                                        out_v = report_svc.analyze_report_visuals(site_code=cmd.site_code, report_code=rc, reset=True)
+                                        n = len(out_v.get("omission_issues_created") or [])
+                                        vision_note = (
+                                            "\n\nVISION CHECK (auto)\n"
+                                            f"- visual omissions flagged: {n}\n"
+                                            f"- artifact: {out_v.get('vision_json')}\n"
+                                        )
+                                    except Exception as e:
+                                        vision_note = f"\n\nVISION CHECK (auto)\n- ERROR: {str(e)[:200]}\n"
+
                                 # Compose an operational reply (grounded + explicit recommendations)
                                 try:
                                     from peter.interfaces.qa.ask import answer_report_question
@@ -542,9 +557,9 @@ class EmailWatcher:
                                             "Be concise and use bullets where helpful."
                                         ),
                                         mode="recommend",
-                                    )
+                                    ).rstrip() + vision_note + "\n"
                                 except Exception:
-                                    reply_text = f"OK report ingested site={cmd.site_code} report={rc} status={out['status']} report_id={out['report_id']}"
+                                    reply_text = f"OK report ingested site={cmd.site_code} report={rc} status={out['status']} report_id={out['report_id']}" + vision_note
 
                     elif cmd.kind == "QUERY":
                         if not cmd.site_code or not cmd.arg:
