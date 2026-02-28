@@ -39,10 +39,27 @@ class ReportService:
         self.report_issue_repo = ReportIssueRepository(conn)
 
     def _validate_report_code(self, report_code: str) -> str:
+        """Normalize + validate a report/inspection reference.
+
+        Historically we used codes like R01 / R12.
+        Real-world inspection references are often purely numeric (e.g. "002").
+
+        Accept:
+          - R01, r01
+          - 01
+          - 002
+        Normalize:
+          - Uppercase
+          - Remove spaces
+          - If numeric only, keep as-is (zero-padded)
+        """
+
         rc = (report_code or "").strip().upper().replace(" ", "")
-        if not re.fullmatch(r"R\d{2}", rc):
-            raise ValidationError("report_code must look like R01 / R12")
-        return rc
+        if re.fullmatch(r"R\d{2,3}", rc):
+            return rc
+        if re.fullmatch(r"\d{2,3}", rc):
+            return rc
+        raise ValidationError("report_code must look like R01 / R12 / 002")
 
     def ingest_report(self, *, site_code: str, report_code: str, file_path: Path) -> dict:
         site_code = (site_code or "").strip().upper()
