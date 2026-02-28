@@ -324,6 +324,7 @@ class ReportService:
             "MOISTURE_FAIL": ("HIGH", True),
             "MOISTURE_HIGH": ("MED", True),
             "DELAMINATION": ("HIGH", True),
+            "DFT_LOW": ("HIGH", True),
             "CRACKING": ("MED", False),
             "BLISTERING": ("MED", False),
             "PEELING_FLAKING": ("MED", False),
