@@ -61,6 +61,11 @@ class GraphClient:
         url = f"{self.base_url}/users/{urllib.parse.quote(mailbox)}/messages/{message_id}/createReply"
         return self._req("POST", url, {})
 
+    def get_message(self, *, mailbox: str, message_id: str, select: str | None = None) -> dict[str, Any]:
+        qs = f"?$select={urllib.parse.quote(select)}" if select else ""
+        url = f"{self.base_url}/users/{urllib.parse.quote(mailbox)}/messages/{message_id}{qs}"
+        return self._req("GET", url)
+
     def update_message(self, *, mailbox: str, message_id: str, payload: dict[str, Any]) -> None:
         url = f"{self.base_url}/users/{urllib.parse.quote(mailbox)}/messages/{message_id}"
         self._req("PATCH", url, payload)

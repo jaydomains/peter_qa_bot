@@ -17,6 +17,17 @@ from peter.db.repositories.site_repo import SiteRepository
 from peter.interfaces.email.classifier import parse_subject
 from peter.interfaces.email.graph_auth import client_credentials_token
 from peter.interfaces.email.graph_client import GraphClient
+
+
+def _escape_html(s: str) -> str:
+    return (
+        (s or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
 from peter.interfaces.email.recipient_policy import (
     assert_internal_only,
     build_sanitized_reply_recipients,
@@ -378,9 +389,28 @@ class EmailWatcher:
                         pass
                     continue
 
-                # Create reply draft
+                # Create reply draft (this preserves in-thread metadata + quoted original)
                 draft = graph.create_reply_draft(mailbox=self.settings.BOT_MAILBOX, message_id=mid)
                 draft_id = draft["id"]
+
+                # Preserve the quoted original body by prepending our reply content
+                # instead of overwriting the entire body.
+                try:
+                    draft_msg = graph.get_message(mailbox=self.settings.BOT_MAILBOX, message_id=draft_id, select="body")
+                    body = draft_msg.get("body") or {}
+                    ctype = str(body.get("contentType") or "Text")
+                    original_content = str(body.get("content") or "")
+
+                    if ctype.lower() == "html":
+                        reply_html = "<p>" + _escape_html(reply_text).replace("\n", "<br>") + "</p><hr>"
+                        merged = reply_html + original_content
+                        reply_body = {"contentType": "HTML", "content": merged}
+                    else:
+                        merged = (reply_text or "") + "\n\n" + original_content
+                        reply_body = {"contentType": "Text", "content": merged}
+                except Exception:
+                    # Fallback: overwrite body if we cannot fetch draft body
+                    reply_body = {"contentType": "Text", "content": reply_text}
 
                 to_list, cc_list = build_sanitized_reply_recipients(
                     internal_domain=self.settings.INTERNAL_DOMAIN,
@@ -395,7 +425,7 @@ class EmailWatcher:
                 payload = {
                     "toRecipients": [{"emailAddress": {"address": a}} for a in to_list],
                     "ccRecipients": [{"emailAddress": {"address": a}} for a in cc_list],
-                    "body": {"contentType": "Text", "content": reply_text},
+                    "body": reply_body,
                 }
 
                 graph.update_message(mailbox=self.settings.BOT_MAILBOX, message_id=draft_id, payload=payload)
