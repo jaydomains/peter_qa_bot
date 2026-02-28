@@ -99,11 +99,22 @@ def process_inbox_once(*, settings: Settings) -> None:
             try:
                 log.info("INBOX report: site=%s ref=%s file=%s", site_code, inspection_ref, str(path))
                 site_svc.get_site_or_raise(site_code)
-                report_svc.ingest_report(site_code=site_code, report_code=inspection_ref, file_path=path)
 
+                out = report_svc.ingest_report(site_code=site_code, report_code=inspection_ref, file_path=path)
+
+                # Move to processed as soon as ingest succeeds (source-of-truth is now stored in sandbox).
                 dest = inbox / "processed" / "report" / site_code / path.name
                 _safe_move(path, dest)
                 log.info("INBOX report OK -> %s", str(dest))
+
+                # Policy B: triage failure must not quarantine or undo ingest.
+                try:
+                    if out.get("status") == "ok":
+                        report_svc.triage_report_text(site_code=site_code, report_code=inspection_ref, reset=True)
+                        log.info("INBOX report triage OK: site=%s ref=%s", site_code, inspection_ref)
+                except Exception:
+                    log.exception("INBOX report triage FAILED (kept ingested): site=%s ref=%s", site_code, inspection_ref)
+
             except Exception:
                 log.exception("INBOX report FAILED: %s", str(path))
                 dest = inbox / "quarantine" / "report" / site_code / path.name

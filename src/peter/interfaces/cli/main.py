@@ -55,6 +55,12 @@ def build_parser() -> argparse.ArgumentParser:
     dr.add_argument("--report-code", required=True)
     dr.add_argument("--days", type=int, default=365)
 
+    ask = sub.add_parser("ask", help="Ask questions about a specific report (grounded by default)")
+    ask.add_argument("--code", required=True)
+    ask.add_argument("--report-code", required=True)
+    ask.add_argument("--question", required=True)
+    ask.add_argument("--mode", choices=["grounded", "recommend"], default="grounded")
+
     ia = sub.add_parser("image-audit", help="Audit report pages for photo/table/labels (no defect inference)")
     ia.add_argument("--code", required=True)
     ia.add_argument("--report-code", required=True)
@@ -168,6 +174,21 @@ def main(argv: list[str] | None = None) -> int:
 
             # Top issues (requires triage/analysis to have populated issues)
             print(query_svc.top_issues(site_code, days=int(args.days)))
+            return 0
+
+        if args.cmd == "ask":
+            from peter.interfaces.qa.ask import answer_report_question
+
+            print(
+                answer_report_question(
+                    conn=conn,
+                    settings=settings,
+                    site_code=args.code,
+                    report_code=args.report_code,
+                    question=args.question,
+                    mode=args.mode,
+                )
+            )
             return 0
 
         if args.cmd == "image-audit":
