@@ -13,7 +13,8 @@ from peter.interfaces.qa.openai_ask import ask_openai_responses
 class EvidencePack:
     metadata: str
     exec_excerpt: str
-    issues: str
+    blocking_issues: str
+    other_issues: str
     vision: str
 
 
@@ -81,20 +82,27 @@ def _build_evidence_pack(
         (report_id,),
     ).fetchall()
 
-    if not issues_rows:
-        issues_text = "(none)"
-    else:
-        lines = []
-        for r in issues_rows[:30]:
-            block = "blocking" if int(r["is_blocking"] or 0) else "non-blocking"
-            desc = str(r["description"] or "")
-            desc = desc.replace("\r", " ").strip()
-            lines.append(f"- [{r['severity']}] [{block}] {r['category']} ({r['issue_type']}): {desc[:260]}")
-        issues_text = "\n".join(lines)
+    blocking_lines: list[str] = []
+    other_lines: list[str] = []
+    for r in issues_rows[:40]:
+        block = bool(int(r["is_blocking"] or 0))
+        desc = str(r["description"] or "")
+        desc = desc.replace("\r", " ").strip()
+        line = f"- [{r['severity']}] [{'blocking' if block else 'non-blocking'}] {r['category']} ({r['issue_type']}): {desc[:380]}"
+        (blocking_lines if block else other_lines).append(line)
+
+    blocking_text = "\n".join(blocking_lines) if blocking_lines else "(none)"
+    other_text = "\n".join(other_lines) if other_lines else "(none)"
 
     vision_text = (vision_text or "").strip() or "(not available)"
 
-    return EvidencePack(metadata=meta, exec_excerpt=exec_excerpt, issues=issues_text, vision=vision_text)
+    return EvidencePack(
+        metadata=meta,
+        exec_excerpt=exec_excerpt,
+        blocking_issues=blocking_text,
+        other_issues=other_text,
+        vision=vision_text,
+    )
 
 
 def draft_email_reply_llm(
@@ -120,16 +128,18 @@ def draft_email_reply_llm(
     )
 
     # Conditional depth
-    has_blocking = "[blocking]" in pack.issues
-    depth = "deep" if has_blocking or ("Blocking" in pack.vision) else "executive"
+    has_blocking = pack.blocking_issues.strip() not in ("", "(none)")
+    depth = "deep" if has_blocking or ("VISION — Blocking" in pack.vision) else "executive"
 
     model = os.getenv("PETER_EMAIL_DRAFT_MODEL", "gpt-4.1")
 
     system = (
         "You are PETER, the QA lead for decorative architectural coatings, replacing a human reviewer. "
         "You MUST be grounded: only use the EVIDENCE provided. "
+        "Do not invent defects, products, test results, or requirements. "
         "If something is not explicitly supported by evidence, say you cannot confirm it. "
         "Write like a competent human QA reviewer: specific, decisive, and practical. "
+        "Be more helpful than a summary: interpret what the findings imply for warranty/compliance and what evidence is required next. "
         "Scope: paint only (ignore repair materials unless directly relevant to paint performance). "
         "Always include a short EVIDENCE section at the end listing which sources you relied on."
     )
@@ -143,14 +153,20 @@ def draft_email_reply_llm(
         f"{pack.metadata}\n"
         "--- EXEC_SUMMARY ---\n"
         f"{pack.exec_excerpt}\n\n"
-        "--- ISSUES (DB) ---\n"
-        f"{pack.issues}\n\n"
+        "--- BLOCKING_ISSUES (DB) ---\n"
+        f"{pack.blocking_issues}\n\n"
+        "--- OTHER_ISSUES (DB) ---\n"
+        f"{pack.other_issues}\n\n"
         "--- VISION ---\n"
         f"{pack.vision}\n\n"
         "OUTPUT REQUIREMENTS:\n"
         "- Start with: OVERALL STATUS: PASS/WARN/FAIL (choose based on evidence; if result in metadata is set, respect it)\n"
-        "- Then: Key findings (bullets). For each key finding, cite source inline: (Source: EXEC_SUMMARY) or (Source: ISSUES) or (Source: VISION pX).\n"
-        "- Then: Required actions (bullets). Tie each action to a finding and cite source.\n"
+        "- Then: Key findings (bullets).\n"
+        "  - You MUST explicitly address EVERY item in BLOCKING_ISSUES, even if the executive summary does not mention it.\n"
+        "  - For each key finding, cite source inline: (Source: EXEC_SUMMARY) or (Source: BLOCKING_ISSUES) or (Source: OTHER_ISSUES) or (Source: VISION pX).\n"
+        "- Then: Required actions (bullets).\n"
+        "  - Each blocking issue must have at least one required action tied to it.\n"
+        "  - If the blocking issue is a spec deviation/coating system mismatch, include a warranty/compliance implication and request for evidence (invoices/POs/photos/logs).\n"
         "- If DEPTH is deep: include a short 'What to verify next visit' section.\n"
         "- End with: EVIDENCE (short list of what you used).\n"
     )
